@@ -82,6 +82,9 @@ func Drain(ctx context.Context, cfg Config) (*Report, error) {
 
 		switch m := msg.(type) {
 		case *pgproto3.CopyData:
+			if len(m.Data) == 0 {
+				continue
+			}
 			switch m.Data[0] {
 			case pglogrepl.XLogDataByteID:
 				xld, err := pglogrepl.ParseXLogData(m.Data[1:])

@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -116,7 +117,10 @@ func (c *internalClient) GetReplicationSlot(ctx context.Context, name string) (*
 		"SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text "+
 			"FROM pg_replication_slots WHERE slot_name = $1", name).
 		Scan(&s.Name, &s.RestartLSN, &s.ConfirmedFlushLSN)
-	if err == pgx.ErrNoRows {
+	// No row means the slot does not exist — a normal "not found", not an error.
+	// CreateLogicalSlot deliberately does NOT swallow ErrNoRows: a create that
+	// returns no row IS a real failure.
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return &s, err
@@ -157,7 +161,7 @@ func (c *internalClient) GetSubscriptionLag(ctx context.Context, name string) (*
 			"COALESCE(EXTRACT(EPOCH FROM replay_lag)*1000, 0)::bigint "+
 			"FROM pg_stat_subscription WHERE subname = $1", name).
 		Scan(&lag.WriteLagMs, &lag.FlushLagMs, &lag.ReplayLagMs)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return &lag, err
