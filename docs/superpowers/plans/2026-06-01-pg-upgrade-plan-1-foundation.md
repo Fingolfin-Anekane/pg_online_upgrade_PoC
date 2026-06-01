@@ -2006,14 +2006,19 @@ func handleXLogData(
 		return nil
 	}
 
-	msgType := pglogrepl.MessageType(xld.WALData[0])
-	if msgType != pglogrepl.MessageTypeCommit {
+	// Parse the logical replication message (pass the FULL WALData; Parse reads
+	// the type byte itself). We only care about Commit messages — transaction
+	// boundaries; everything else is skipped. Parse errors for message types we
+	// don't decode are non-fatal. NOTE: the installed pglogrepl exposes
+	// Parse() returning a Message interface — there is no ParseCommitMessage.
+	logicalMsg, err := pglogrepl.Parse(xld.WALData)
+	if err != nil {
 		return nil
 	}
 
-	commitMsg, err := pglogrepl.ParseCommitMessage(xld.WALData[1:])
-	if err != nil {
-		return fmt.Errorf("parse commit: %w", err)
+	commitMsg, ok := logicalMsg.(*pglogrepl.CommitMessage)
+	if !ok {
+		return nil
 	}
 
 	if commitMsg.CommitLSN <= targetLSN {
