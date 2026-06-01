@@ -191,7 +191,14 @@ Reads the intent-log, pairs `attempt`/result records by `op_id`, then queries th
 database via DSN-B at rest (after the workload has stopped and replication has
 converged). Findings:
 
-**events — loss / duplication / phantom**
+**events — loss / duplication / phantom (set membership against the log, not gap-scanning)**
+
+Loss is decided by **set comparison against the intent-log**, never by scanning
+`client_seq` for gaps. Gaps in `client_seq` are legitimate: a writer increments
+its counter for every attempt, but `failed` and `in-doubt` operations never reach
+the DB, so the surviving `client_seq` values are naturally sparse. The only
+meaningful signal is "the log says acked, but the DB disagrees."
+
 - acked: matched in DB by `(writer_id, client_seq)`. Missing → **LOST**.
   More than one → **DUP**.
 - failed: must not be present. Present → **PHANTOM-COMMIT**.
@@ -202,8 +209,11 @@ converged). Findings:
 - `nextval` of the `events_id_seq` (read non-destructively from
   `pg_sequences.last_value`) must be `≥ max(id)`.
 - **Gaps in `id` are NOT a finding** — sequence gaps are normal (rolled-back
-  txns burn sequence values). The loss signal lives in `client_seq` continuity
-  among acked operations, not in `id`.
+  txns burn sequence values). There is no ground-truth set for `id` (the DB
+  assigns it), so `id` is only checked for duplicates and advance. The loss
+  signal lives entirely in the `client_seq` set membership against the
+  intent-log (see the loss/dup section), not in either `id` or `client_seq`
+  continuity.
 
 **events — long-txn (case 3)**
 - for every `batch_id` in an acked long-txn, all `batch-size` rows are present
@@ -237,13 +247,11 @@ Streamed to stdout, never a verdict:
   — generate load; `SIGHUP` swaps A→B; `SIGINT`/`--duration` stops.
 - `loadtool verify  --dsn-b --intent-log` — reconcile, print verdict.
 
-The expected `accounts` sum is not a manual input: `init` records it (alongside
-`K` and the seed value) in a small sidecar meta record so `verify` reads it back
-rather than relying on the operator to re-supply it. The meta lives in the
-intent-log header (first record) written by `run`, or, if `run` and `init` use
-the same intent-log path, is carried forward; the concrete carrier is a
-`{"kind":"meta","accounts_sum":...,"accounts_k":...}` record at the head of the
-intent-log.
+The expected `accounts` sum is **not persisted** anywhere: it is a deterministic
+function of `init` parameters. `init` seeds each of `K` accounts with a fixed
+balance `B` (config constant), so the invariant is `SUM(balance) = count(*) * B`.
+`accounts` never gains or loses rows, so `verify` recomputes the expected sum
+from the live row count and the known `B` — no meta record, no operator input.
 
 Config via flags **and** YAML (`--config`), same pattern as `pg-upgrade`.
 
