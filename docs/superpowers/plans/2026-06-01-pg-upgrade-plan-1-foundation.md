@@ -332,8 +332,11 @@ Create `internal/runner/types.go`:
 ```go
 package runner
 
-type PhaseID string
-type StepID string
+// PhaseID and StepID are type aliases (not distinct types) so they are
+// interchangeable with string. Phases pass p.ID() to state.Manager methods
+// that take plain strings without explicit conversion.
+type PhaseID = string
+type StepID = string
 
 type StepStatus string
 
@@ -1447,12 +1450,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Querier abstracts pgxpool.Pool for testing (pgxmock implements this).
-type Querier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Exec(ctx context.Context, sql string, args ...any) (interface{ RowsAffected() int64 }, error)
-}
-
 // Client is the interface used by phases to interact with PostgreSQL.
 type Client interface {
 	ShowWALLevel(ctx context.Context) (string, error)
@@ -1497,24 +1494,19 @@ type PoolClient struct {
 	pool *pgxpool.Pool
 }
 
-// mockablePool is the subset of pgxpool.Pool used by PoolClient (for testing).
-type mockablePool interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Exec(ctx context.Context, sql string, args ...any) (pgconn interface{ RowsAffected() int64 }, err error)
-}
-
-// internalClient holds either a real pool or a mock.
-type internalClient struct {
-	q interface {
-		QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-		Exec(ctx context.Context, sql string, args ...any) (pgx.CommandTag, error)
-	}
-}
-
-func NewFromPool(q interface {
+// poolQuerier is the subset of pgxpool.Pool that internalClient needs.
+type poolQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgx.CommandTag, error)
-}) *internalClient {
+}
+
+// internalClient implements most Client methods using a poolQuerier.
+// pgxmock.NewPool() satisfies this interface, enabling unit tests without a real database.
+type internalClient struct {
+	q poolQuerier
+}
+
+func NewFromPool(q poolQuerier) *internalClient {
 	return &internalClient{q: q}
 }
 
@@ -1611,10 +1603,10 @@ func (c *internalClient) GetSubscriptionLag(ctx context.Context, name string) (*
 	return &lag, err
 }
 
-func (c *internalClient) GetAllSequences(ctx context.Context) ([]SequenceInfo, error) {
-	// pgxmock does not support Query easily; real pool uses Query.
-	// For now stub — will be used only via PoolClient in production.
-	return nil, fmt.Errorf("GetAllSequences: use PoolClient")
+// GetAllSequences is not supported on internalClient because pgxmock does not
+// easily mock multi-row Query calls. Call this only via PoolClient in production.
+func (c *internalClient) GetAllSequences(_ context.Context) ([]SequenceInfo, error) {
+	return nil, fmt.Errorf("pg: GetAllSequences requires PoolClient (not available in test mode)")
 }
 
 func (c *internalClient) SetSequenceValue(ctx context.Context, schema, name string, value int64) error {
@@ -1698,14 +1690,76 @@ func (c *internalClient) DropPublication(ctx context.Context, name string) error
 
 func (c *internalClient) Close() {}
 
-// PoolClient delegates to internalClient using the real pool.
+// ic returns an internalClient backed by the real pool, used for delegation.
+func (p *PoolClient) ic() *internalClient { return &internalClient{q: p.pool} }
+
 func (p *PoolClient) ShowWALLevel(ctx context.Context) (string, error) {
-	return (&internalClient{q: p.pool}).ShowWALLevel(ctx)
+	return p.ic().ShowWALLevel(ctx)
+}
+func (p *PoolClient) IsInRecovery(ctx context.Context) (bool, error) {
+	return p.ic().IsInRecovery(ctx)
+}
+func (p *PoolClient) GetLastWALReplayLSN(ctx context.Context) (string, error) {
+	return p.ic().GetLastWALReplayLSN(ctx)
+}
+func (p *PoolClient) GetWALReceiverReceivedLSN(ctx context.Context) (string, error) {
+	return p.ic().GetWALReceiverReceivedLSN(ctx)
+}
+func (p *PoolClient) Checkpoint(ctx context.Context) error { return p.ic().Checkpoint(ctx) }
+func (p *PoolClient) GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error) {
+	return p.ic().GetReplicationSlot(ctx, name)
+}
+func (p *PoolClient) CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error) {
+	return p.ic().CreateLogicalSlot(ctx, name, plugin)
+}
+func (p *PoolClient) CreatePublication(ctx context.Context, name string) error {
+	return p.ic().CreatePublication(ctx, name)
+}
+func (p *PoolClient) CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error {
+	return p.ic().CreateSubscription(ctx, name, connStr, pubName, slotName)
+}
+func (p *PoolClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
+	return p.ic().GetSubscriptionLag(ctx, name)
+}
+func (p *PoolClient) SetSequenceValue(ctx context.Context, schema, name string, value int64) error {
+	return p.ic().SetSequenceValue(ctx, schema, name, value)
+}
+func (p *PoolClient) FreezeForUpgrade(ctx context.Context, dbname string) error {
+	return p.ic().FreezeForUpgrade(ctx, dbname)
+}
+func (p *PoolClient) UnfreezeAfterUpgrade(ctx context.Context, dbname string) error {
+	return p.ic().UnfreezeAfterUpgrade(ctx, dbname)
+}
+func (p *PoolClient) DropSubscription(ctx context.Context, name string) error {
+	return p.ic().DropSubscription(ctx, name)
+}
+func (p *PoolClient) DropPublication(ctx context.Context, name string) error {
+	return p.ic().DropPublication(ctx, name)
 }
 
-// ... PoolClient delegates all methods to internalClient{q: p.pool}
-// (identical delegation for all Client methods — omitted for brevity,
-// follow the same pattern as ShowWALLevel above for each method)
+// GetAllSequences uses pool.Query directly (multi-row; not available via internalClient).
+func (p *PoolClient) GetAllSequences(ctx context.Context) ([]SequenceInfo, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT schemaname, sequencename, COALESCE(last_value, 0)
+		FROM pg_sequences
+		WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+		ORDER BY schemaname, sequencename
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("pg: get sequences: %w", err)
+	}
+	defer rows.Close()
+
+	var seqs []SequenceInfo
+	for rows.Next() {
+		var s SequenceInfo
+		if err := rows.Scan(&s.Schema, &s.Name, &s.LastValue); err != nil {
+			return nil, err
+		}
+		seqs = append(seqs, s)
+	}
+	return seqs, rows.Err()
+}
 
 func (p *PoolClient) Close() { p.pool.Close() }
 
@@ -1825,8 +1879,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgconn"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
@@ -2118,7 +2172,7 @@ func statusCmd(cfgPath *string) *cobra.Command {
 - [ ] **Step 2: Build and verify**
 
 ```bash
-go build ./...
+go build -o pg-upgrade ./cmd/pg-upgrade/
 ./pg-upgrade --help
 ```
 
