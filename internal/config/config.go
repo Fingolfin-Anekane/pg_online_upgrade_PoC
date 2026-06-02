@@ -98,6 +98,9 @@ func (c *Config) ValidateForRun() error {
 	if u.NewDataDir == u.DataDir {
 		return fmt.Errorf("config: new_data_dir must differ from data_dir")
 	}
+	if u.SequenceBuffer <= 0 {
+		return fmt.Errorf("config: sequence_buffer must be positive (got %d)", u.SequenceBuffer)
+	}
 	return nil
 }
 

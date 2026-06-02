@@ -284,10 +284,11 @@ func (c *internalClient) FreezeForUpgrade(ctx context.Context, dbname string) er
 				FROM pg_tables
 				WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
 			LOOP
+				EXECUTE format('DROP TRIGGER IF EXISTS upgrade_freeze ON %s', t);
 				EXECUTE format(
 					'CREATE TRIGGER upgrade_freeze
 					 BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON %s
-					 FOR EACH STATEMENT EXECUTE FUNCTION raise_upgrade_readonly()',
+					 FOR EACH STATEMENT EXECUTE PROCEDURE raise_upgrade_readonly()',
 					t);
 			END LOOP;
 		END;

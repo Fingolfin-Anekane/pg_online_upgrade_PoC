@@ -59,3 +59,38 @@ func TestSwitchoverFreezeAndSyncSequences(t *testing.T) {
 	assert.Equal(t, int64(1042), pg17.setSeqs[0].value) // 42 + buffer 1000
 	assert.True(t, d.Mgr.Get().Artifacts.SequencesSynced)
 }
+
+func TestWaitFinalLagZeroErrorsWhenBehind(t *testing.T) {
+	pg17 := &fakePG{subLag: &pg.SubscriptionLag{FlushLagMs: 250}}
+	d := switchoverDeps(t, pg17, &fakePG{})
+	step := &waitFinalLagZero{d}
+	done, err := step.Check(context.Background())
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.Error(t, step.Run(context.Background()))
+}
+
+func TestSyncSequencesMultiple(t *testing.T) {
+	pg17 := &fakePG{subLag: &pg.SubscriptionLag{}}
+	oldPrimary := &fakePG{sequences: []pg.SequenceInfo{
+		{Schema: "public", Name: "a", LastValue: 10},
+		{Schema: "app", Name: "b", LastValue: 7},
+	}}
+	d := switchoverDeps(t, pg17, oldPrimary)
+	require.NoError(t, (&syncSequences{d}).Run(context.Background()))
+	require.Len(t, pg17.setSeqs, 2)
+	assert.Equal(t, int64(1010), pg17.setSeqs[0].value)
+	assert.Equal(t, int64(1007), pg17.setSeqs[1].value)
+	assert.True(t, d.Mgr.Get().Artifacts.SequencesSynced)
+}
+
+func TestValidateForRunRejectsZeroSequenceBuffer(t *testing.T) {
+	// constructed inline so the rest of the config is valid; only SequenceBuffer is 0
+	cfg := &config.Config{Upgrade: config.UpgradeConfig{
+		TargetNode: "n1", OldPGBindir: "/o", DataDir: "/old", NewDataDir: "/new",
+		PatroniConfigPath: "/p.yml", SubscriptionName: "s", ReversePubName: "rp",
+		ReverseSubName: "rs", DBName: "app", PG17DSN: "host=n1", NewPatroniURL: "http://x",
+		DSNSwapSignalPath: "/sig", SequenceBuffer: 0,
+	}}
+	require.Error(t, cfg.ValidateForRun())
+}

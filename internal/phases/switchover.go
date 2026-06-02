@@ -32,7 +32,7 @@ func NewSwitchover(d Deps) runner.Phase {
 type freezeOldPrimary struct{ d Deps }
 
 func (s *freezeOldPrimary) ID() runner.StepID                   { return "FreezeOldPrimary" }
-func (s *freezeOldPrimary) Check(context.Context) (bool, error) { return false, nil } // FreezeForUpgrade is idempotent
+func (s *freezeOldPrimary) Check(context.Context) (bool, error) { return false, nil } // always-run; FreezeForUpgrade re-applies idempotently (DROP IF EXISTS + CREATE)
 func (s *freezeOldPrimary) Run(ctx context.Context) error {
 	old, err := s.d.Primary(ctx)
 	if err != nil {
