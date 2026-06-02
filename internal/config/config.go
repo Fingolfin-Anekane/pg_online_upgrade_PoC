@@ -14,10 +14,13 @@ type Config struct {
 }
 
 type UpgradeConfig struct {
-	TargetNode      string `yaml:"target_node"`
-	SlotName        string `yaml:"slot_name"`
-	PublicationName string `yaml:"publication_name"`
-	NewPGBindir     string `yaml:"new_pg_bindir"`
+	TargetNode        string `yaml:"target_node"`
+	SlotName          string `yaml:"slot_name"`
+	PublicationName   string `yaml:"publication_name"`
+	NewPGBindir       string `yaml:"new_pg_bindir"`
+	OldPGBindir       string `yaml:"old_pg_bindir"`
+	DataDir           string `yaml:"data_dir"`
+	PatroniConfigPath string `yaml:"patroni_config_path"`
 }
 
 type PGConfig struct {
