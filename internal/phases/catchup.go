@@ -1,0 +1,137 @@
+package phases
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/dmbabuev/pg-upgrade/internal/connect"
+	"github.com/dmbabuev/pg-upgrade/internal/runner"
+)
+
+// NewCatchup builds Phase 5: start PG17, subscribe to the old primary, catch up,
+// and verify the operator-formed new Patroni cluster is healthy.
+func NewCatchup(d Deps) runner.Phase {
+	return &simplePhase{
+		id: "catchup",
+		steps: []runner.Step{
+			&startPG17{d},
+			&createForwardSubscription{d},
+			&waitLagZero{d},
+			&verifyNewClusterHealthy{d},
+		},
+		trans: []runner.Transition{{To: "switchover"}},
+	}
+}
+
+// --- StartPG17OnN1 ---
+
+type startPG17 struct{ d Deps }
+
+func (s *startPG17) ID() runner.StepID { return "StartPG17OnN1" }
+func (s *startPG17) Check(ctx context.Context) (bool, error) {
+	// done if PG17 already accepts connections
+	c, err := s.d.PG17(ctx)
+	if err != nil {
+		return false, nil // not up yet
+	}
+	if _, err := c.IsInRecovery(ctx); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+func (s *startPG17) Run(ctx context.Context) error {
+	return s.d.Tools.Start(ctx, s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewDataDir)
+}
+
+// --- CreateForwardSubscription (PG17 subscribes to old primary's publication) ---
+
+type createForwardSubscription struct{ d Deps }
+
+func (s *createForwardSubscription) ID() runner.StepID { return "CreateForwardSubscription" }
+func (s *createForwardSubscription) Check(ctx context.Context) (bool, error) {
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return false, err
+	}
+	lag, err := pg17.GetSubscriptionLag(ctx, s.d.Cfg.Upgrade.SubscriptionName)
+	if err != nil {
+		return false, err
+	}
+	return lag != nil, nil // subscription exists (has a stat row)
+}
+func (s *createForwardSubscription) Run(ctx context.Context) error {
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return err
+	}
+	primaryDSN, err := connect.DSNForHost(s.d.Cfg.PG.SuperuserDSN, s.d.Mgr.Get().Artifacts.PrimaryHost)
+	if err != nil {
+		return err
+	}
+	return pg17.CreateSubscription(ctx,
+		s.d.Cfg.Upgrade.SubscriptionName, primaryDSN, s.d.Cfg.Upgrade.PublicationName, s.d.Cfg.Upgrade.SlotName)
+}
+
+// --- WaitLagZero ---
+
+type waitLagZero struct{ d Deps }
+
+func (s *waitLagZero) ID() runner.StepID                       { return "WaitLagZero" }
+func (s *waitLagZero) Check(ctx context.Context) (bool, error) { return s.zero(ctx) }
+func (s *waitLagZero) Run(ctx context.Context) error {
+	zero, err := s.zero(ctx)
+	if err != nil {
+		return err
+	}
+	if !zero {
+		return fmt.Errorf("catchup: subscription lag not yet zero; re-run pg-upgrade to retry")
+	}
+	return nil
+}
+func (s *waitLagZero) zero(ctx context.Context) (bool, error) {
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return false, err
+	}
+	lag, err := pg17.GetSubscriptionLag(ctx, s.d.Cfg.Upgrade.SubscriptionName)
+	if err != nil {
+		return false, err
+	}
+	if lag == nil {
+		return false, fmt.Errorf("catchup: subscription %s not found", s.d.Cfg.Upgrade.SubscriptionName)
+	}
+	return lag.WriteLagMs == 0 && lag.FlushLagMs == 0 && lag.ReplayLagMs == 0, nil
+}
+
+// --- VerifyNewClusterHealthy (delegated formation; binary verifies) ---
+
+type verifyNewClusterHealthy struct{ d Deps }
+
+func (s *verifyNewClusterHealthy) ID() runner.StepID                   { return "VerifyNewClusterHealthy" }
+func (s *verifyNewClusterHealthy) Check(context.Context) (bool, error) { return false, nil } // always verify
+func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
+	cluster, err := s.d.NewPatroni.GetCluster(ctx)
+	if err != nil {
+		return err
+	}
+	if cluster.Leader() == nil {
+		return fmt.Errorf("catchup: new Patroni cluster has no leader (form the new cluster, then re-run)")
+	}
+	replicas := 0
+	for _, m := range cluster.Members {
+		if m.Role == "replica" {
+			replicas++
+		}
+	}
+	if replicas < 1 {
+		return fmt.Errorf("catchup: new Patroni cluster has no replica yet (add replicas, then re-run)")
+	}
+	return nil
+}
+
+var (
+	_ runner.Step = (*startPG17)(nil)
+	_ runner.Step = (*createForwardSubscription)(nil)
+	_ runner.Step = (*waitLagZero)(nil)
+	_ runner.Step = (*verifyNewClusterHealthy)(nil)
+)

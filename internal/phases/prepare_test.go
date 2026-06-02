@@ -29,6 +29,8 @@ type fakePG struct {
 	checkpoints     int
 	serverVersion   int
 	conninfoCleared bool
+	subLag          *pg.SubscriptionLag
+	createdSub      string
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
