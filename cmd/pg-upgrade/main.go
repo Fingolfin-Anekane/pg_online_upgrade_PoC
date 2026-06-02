@@ -121,6 +121,9 @@ func runCmd(cfgPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := cfg.ValidateForRun(); err != nil {
+				return err
+			}
 			if statePath == "" {
 				statePath = "pg-upgrade-state.json"
 			}

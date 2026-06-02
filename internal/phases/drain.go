@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pglogrepl"
 
+	"github.com/dmbabuev/pg-upgrade/internal/connect"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/dmbabuev/pg-upgrade/internal/slotdrain"
 	"github.com/dmbabuev/pg-upgrade/internal/state"
@@ -37,8 +38,16 @@ func (s *runSlotDrain) Run(ctx context.Context) error {
 	if target == "" {
 		return fmt.Errorf("drain: target_lsn not set")
 	}
+	host := s.d.Mgr.Get().Artifacts.PrimaryHost
+	if host == "" {
+		return fmt.Errorf("drain: primary host not discovered")
+	}
+	connStr, err := connect.DSNForHost(s.d.Cfg.PG.SuperuserDSN, host)
+	if err != nil {
+		return err
+	}
 	report, err := s.d.Drain(ctx, slotdrain.Config{
-		ConnString: s.d.Cfg.PG.SuperuserDSN,
+		ConnString: connStr,
 		SlotName:   s.d.Cfg.Upgrade.SlotName,
 		PubName:    s.d.Cfg.Upgrade.PublicationName,
 		TargetLSN:  target,

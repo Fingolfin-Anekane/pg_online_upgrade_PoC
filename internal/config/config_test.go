@@ -62,6 +62,22 @@ func TestLoad_FileNotFound(t *testing.T) {
 	assert.ErrorContains(t, err, "read config")
 }
 
+func TestValidateForRun(t *testing.T) {
+	cfg := &config.Config{Upgrade: config.UpgradeConfig{
+		TargetNode: "n1", OldPGBindir: "/o", NewPGBindir: "/n",
+		DataDir: "/old", NewDataDir: "/new", PatroniConfigPath: "/p.yml",
+	}}
+	require.NoError(t, cfg.ValidateForRun())
+
+	cfg.Upgrade.DataDir = ""
+	assert.ErrorContains(t, cfg.ValidateForRun(), "data_dir")
+
+	cfg2 := &config.Config{Upgrade: config.UpgradeConfig{
+		TargetNode: "n1", OldPGBindir: "/o", DataDir: "/same", NewDataDir: "/same", PatroniConfigPath: "/p",
+	}}
+	assert.ErrorContains(t, cfg2.ValidateForRun(), "new_data_dir must differ")
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp("", "pg-upgrade-*.yaml")

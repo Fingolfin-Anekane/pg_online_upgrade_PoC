@@ -18,11 +18,13 @@ func TestDrainRunsAndVerifies(t *testing.T) {
 	require.NoError(t, mgr.Advance("isolate"))
 	require.NoError(t, mgr.Advance("drain"))
 	require.NoError(t, mgr.SetTargetLSN("0/3FA20000"))
+	require.NoError(t, mgr.SetPrimaryHost("primary.host"))
 
 	var called bool
 	drainFn := func(_ context.Context, cfg slotdrain.Config) (*slotdrain.Report, error) {
 		called = true
 		assert.Equal(t, "0/3FA20000", cfg.TargetLSN)
+		assert.Contains(t, cfg.ConnString, "host=primary.host")
 		return &slotdrain.Report{CompletedAt: time.Now(), FinalFlushLSN: "0/3FA20000", TransactionsDrained: 3}, nil
 	}
 	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/3FA20000"}}

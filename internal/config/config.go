@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +41,35 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, cfg.validate()
+}
+
+// ValidateForRun checks the additional fields the full `run` (phases 1-4)
+// requires beyond the base Load() validation. drain-slot/status do not call it.
+func (c *Config) ValidateForRun() error {
+	u := c.Upgrade
+	var missing []string
+	if u.TargetNode == "" {
+		missing = append(missing, "target_node")
+	}
+	if u.OldPGBindir == "" {
+		missing = append(missing, "old_pg_bindir")
+	}
+	if u.DataDir == "" {
+		missing = append(missing, "data_dir")
+	}
+	if u.NewDataDir == "" {
+		missing = append(missing, "new_data_dir")
+	}
+	if u.PatroniConfigPath == "" {
+		missing = append(missing, "patroni_config_path")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("config: run requires upgrade fields: %s", strings.Join(missing, ", "))
+	}
+	if u.NewDataDir == u.DataDir {
+		return fmt.Errorf("config: new_data_dir must differ from data_dir")
+	}
+	return nil
 }
 
 func (c *Config) validate() error {
