@@ -24,8 +24,9 @@ func Render(w io.Writer, f *Findings) error {
 	if len(f.Partial) > 0 {
 		p("  PARTIAL ops: %v", f.Partial)
 	}
-	p("sequence: %d duplicate id; last_value=%d max(id)=%d%s",
-		f.DupID, f.LastValue, f.MaxID, ifThen(f.SeqBehind, "  <-- SEQUENCE BEHIND", ""))
+	p("sequence: %d duplicate id%s; last_value=%d max(id)=%d%s",
+		f.DupID, ifThen(f.DupID > 0, "  <-- DUPLICATE ID", ""),
+		f.LastValue, f.MaxID, ifThen(f.SeqBehind, "  <-- SEQUENCE BEHIND", ""))
 	p("accounts: sum expected=%d actual=%d%s",
 		f.SumExpected, f.SumActual, ifThen(f.SumExpected != f.SumActual, "  <-- sum mismatch", ""))
 
