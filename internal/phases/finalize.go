@@ -55,6 +55,11 @@ func (s *dropForwardSubscription) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// sub_upgrade is slot-bearing, so DROP SUBSCRIPTION contacts the old primary
+	// to drop its replication slot (as the spec intends). This requires the old
+	// primary to be reachable — guaranteed here because finalize always runs
+	// before cleanup (which decommissions the old primary), and a re-entry into
+	// finalize only happens before the run has advanced to cleanup.
 	return pg17.DropSubscription(ctx, s.d.Cfg.Upgrade.SubscriptionName)
 }
 

@@ -76,3 +76,8 @@ func TestVerifyRenamedClusterRejectsNoLeader(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no leader")
 }
+
+func TestVerifyRenamedClusterAcceptsLeader(t *testing.T) {
+	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{{Name: "n1", Role: "leader"}}}}
+	require.NoError(t, (&verifyRenamedCluster{Deps{NewPatroni: newPat}}).Run(context.Background()))
+}
