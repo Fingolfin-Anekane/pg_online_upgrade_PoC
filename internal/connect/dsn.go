@@ -39,14 +39,20 @@ func DSNForHost(template, host string) (string, error) {
 	sort.Strings(keys)
 
 	var b strings.Builder
-	for i, k := range keys {
+	for _, k := range keys {
 		if parts[k] == "" {
 			continue
 		}
-		if i > 0 && b.Len() > 0 {
+		if b.Len() > 0 {
 			b.WriteByte(' ')
 		}
-		fmt.Fprintf(&b, "%s=%s", k, parts[k])
+		v := parts[k]
+		if strings.ContainsAny(v, " \t\\'") {
+			v = strings.ReplaceAll(v, `\`, `\\`)
+			v = strings.ReplaceAll(v, `'`, `\'`)
+			v = "'" + v + "'"
+		}
+		fmt.Fprintf(&b, "%s=%s", k, v)
 	}
 	return b.String(), nil
 }
