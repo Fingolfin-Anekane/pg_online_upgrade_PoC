@@ -24,6 +24,7 @@ type Selector struct {
 	switched atomic.Bool
 }
 
+// NewSelector returns a Selector starting on pool a (pre-switch).
 func NewSelector(a, b Pool) *Selector { return &Selector{a: a, b: b} }
 
 // Switch flips the active pool from A to B. Idempotent.
