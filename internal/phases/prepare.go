@@ -81,6 +81,13 @@ func (s *verifyPrerequisites) Run(ctx context.Context) error {
 	if !inRec {
 		return fmt.Errorf("prepare: target node %s is not a replica (not in recovery)", s.d.Cfg.Upgrade.TargetNode)
 	}
+	v, err := s.d.N1.ServerVersionNum(ctx)
+	if err != nil {
+		return err
+	}
+	if v < 100000 {
+		return fmt.Errorf("prepare: N1 server_version_num %d is below the minimum supported PostgreSQL 10", v)
+	}
 	return nil
 }
 

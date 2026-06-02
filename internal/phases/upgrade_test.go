@@ -25,6 +25,7 @@ type fakeTools struct {
 	checked   bool
 	upgraded  bool
 	restarted bool
+	onPromote func()
 }
 
 func (f *fakeTools) OldControlData(context.Context, string) (*pgbin.ControlData, error) {
@@ -33,7 +34,13 @@ func (f *fakeTools) OldControlData(context.Context, string) (*pgbin.ControlData,
 func (f *fakeTools) NewControlData(context.Context, string) (*pgbin.ControlData, error) {
 	return &pgbin.ControlData{State: "in production", SystemID: f.sysID}, nil
 }
-func (f *fakeTools) Promote(context.Context, string) error   { f.promoted = true; return nil }
+func (f *fakeTools) Promote(context.Context, string) error {
+	if f.onPromote != nil {
+		f.onPromote()
+	}
+	f.promoted = true
+	return nil
+}
 func (f *fakeTools) StopClean(context.Context, string) error { f.stopped = true; return nil }
 func (f *fakeTools) UpgradeCheck(context.Context, pgbin.UpgradeOptions) error {
 	f.checked = true
@@ -54,8 +61,9 @@ func TestUpgradeHappyPath(t *testing.T) {
 	cfgPath := filepath.Join(dir, "patroni.yml")
 	n1 := &fakePG{inRecovery: true} // must be in recovery so PromoteN1.Run is called
 	tools := &fakeTools{
-		oldState: "in production", // promoted/running, not yet shut down at check time
-		sysID:    "7361852939023499998",
+		oldState:  "in production", // promoted/running, not yet shut down at check time
+		sysID:     "7361852939023499998",
+		onPromote: func() { n1.inRecovery = false },
 	}
 	d := Deps{
 		Cfg: config.Config{Upgrade: config.UpgradeConfig{
@@ -129,4 +137,21 @@ func TestUpgradeSkipsPromoteWhenAlreadyPrimary(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, done) // skip promote
 	assert.False(t, tools.promoted)
+}
+
+func TestPromoteConfirmsOutOfRecovery(t *testing.T) {
+	n1 := &fakePG{inRecovery: true}
+	tools := &fakeTools{onPromote: func() { n1.inRecovery = false }}
+	d := Deps{Mgr: testMgr(t), N1: n1, Tools: tools, Cfg: config.Config{Upgrade: config.UpgradeConfig{DataDir: "/d"}}}
+	require.NoError(t, (&promoteN1{d}).Run(context.Background()))
+	assert.True(t, tools.promoted)
+}
+
+func TestPromoteErrorsIfStillInRecovery(t *testing.T) {
+	n1 := &fakePG{inRecovery: true} // promote does not exit recovery
+	tools := &fakeTools{}           // no onPromote -> stays in recovery
+	d := Deps{Mgr: testMgr(t), N1: n1, Tools: tools, Cfg: config.Config{Upgrade: config.UpgradeConfig{DataDir: "/d"}}}
+	err := (&promoteN1{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still in recovery")
 }

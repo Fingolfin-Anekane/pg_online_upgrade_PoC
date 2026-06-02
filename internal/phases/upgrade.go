@@ -59,7 +59,19 @@ func (s *promoteN1) Check(ctx context.Context) (bool, error) {
 	return !inRec, nil // already promoted = done
 }
 func (s *promoteN1) Run(ctx context.Context) error {
-	return s.d.Tools.Promote(ctx, s.d.Cfg.Upgrade.DataDir)
+	if err := s.d.Tools.Promote(ctx, s.d.Cfg.Upgrade.DataDir); err != nil {
+		return err
+	}
+	// pg_ctl promote -w should have waited; confirm with the authoritative
+	// signal. If still in recovery, a re-run self-heals (Check skips once promoted).
+	inRec, err := s.d.N1.IsInRecovery(ctx)
+	if err != nil {
+		return err
+	}
+	if inRec {
+		return fmt.Errorf("upgrade: promote not complete (still in recovery); re-run pg-upgrade")
+	}
+	return nil
 }
 
 // --- ShutdownN1Clean ---

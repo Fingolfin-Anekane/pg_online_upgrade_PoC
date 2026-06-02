@@ -3,6 +3,9 @@ package phases
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/jackc/pglogrepl"
@@ -71,7 +74,59 @@ func (s *disconnectN1) ID() runner.StepID { return "DisconnectN1FromWAL" }
 // IsWALReceiverActive (the receiver may have already stopped, but
 // primary_conninfo still needs clearing so Patroni cannot reconnect).
 func (s *disconnectN1) Check(context.Context) (bool, error) { return false, nil }
-func (s *disconnectN1) Run(ctx context.Context) error       { return s.d.N1.DisconnectFromWAL(ctx) }
+func (s *disconnectN1) Run(ctx context.Context) error {
+	v, err := s.d.N1.ServerVersionNum(ctx)
+	if err != nil {
+		return err
+	}
+	switch {
+	case v >= 130000:
+		// PG13+: primary_conninfo is reloadable (PGC_SIGHUP).
+		return s.d.N1.DisconnectFromWAL(ctx)
+	case v >= 120000:
+		// PG12: GUC but PGC_POSTMASTER -> clear via ALTER SYSTEM, then restart.
+		if err := s.d.N1.ClearPrimaryConninfo(ctx); err != nil {
+			return err
+		}
+		return s.d.Tools.Restart(ctx, s.d.Cfg.Upgrade.DataDir)
+	default:
+		// PG10/11: primary_conninfo lives in recovery.conf (not a GUC); edit the
+		// file (keep standby_mode) and restart.
+		if err := removePrimaryConninfoFromRecoveryConf(s.d.Cfg.Upgrade.DataDir); err != nil {
+			return err
+		}
+		return s.d.Tools.Restart(ctx, s.d.Cfg.Upgrade.DataDir)
+	}
+}
+
+// removePrimaryConninfoFromRecoveryConf strips primary_conninfo from
+// $DATADIR/recovery.conf (PG10/11), leaving standby_mode and everything else so
+// a restart brings N1 up as a standby with no upstream (frozen at target_lsn).
+func removePrimaryConninfoFromRecoveryConf(dataDir string) error {
+	path := filepath.Join(dataDir, "recovery.conf")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("isolate: read recovery.conf: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(stripPrimaryConninfo(string(data))), 0o600); err != nil {
+		return fmt.Errorf("isolate: write recovery.conf: %w", err)
+	}
+	return nil
+}
+
+// stripPrimaryConninfo removes active primary_conninfo lines from a recovery.conf
+// body, preserving comments and all other settings.
+func stripPrimaryConninfo(content string) string {
+	lines := strings.Split(content, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "primary_conninfo") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
 
 // --- WaitReplayComplete: replay >= received ---
 

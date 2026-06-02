@@ -17,16 +17,18 @@ import (
 // declared here and reused by isolate_test.go / upgrade_test.go (same package).
 type fakePG struct {
 	pg.Client
-	walLevel     string
-	inRecovery   bool
-	slot         *pg.ReplicationSlot
-	createdPub   string
-	createdSlot  string
-	receivedLSN  string
-	walRcvActive bool
-	disconnected bool
-	replayLSN    string
-	checkpoints  int
+	walLevel        string
+	inRecovery      bool
+	slot            *pg.ReplicationSlot
+	createdPub      string
+	createdSlot     string
+	receivedLSN     string
+	walRcvActive    bool
+	disconnected    bool
+	replayLSN       string
+	checkpoints     int
+	serverVersion   int
+	conninfoCleared bool
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
@@ -73,7 +75,7 @@ func testMgr(t *testing.T) *state.Manager {
 
 func TestPrepareDiscoverAndCreate(t *testing.T) {
 	primary := &fakePG{walLevel: "logical", inRecovery: false, slot: nil}
-	n1 := &fakePG{inRecovery: true}
+	n1 := &fakePG{inRecovery: true, serverVersion: 120008}
 	pat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
 		{Name: "p", Host: "primary.host", Role: "leader"},
 		{Name: "n1", Host: "n1.host", Role: "replica"},
