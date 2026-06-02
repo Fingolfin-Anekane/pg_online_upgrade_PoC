@@ -40,10 +40,11 @@ type fakePG struct {
 	droppedSub      []string
 	droppedPub      []string
 	unfrozen        string
+	inRecoveryErr   error
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
-func (f *fakePG) IsInRecovery(context.Context) (bool, error)   { return f.inRecovery, nil }
+func (f *fakePG) IsInRecovery(context.Context) (bool, error)   { return f.inRecovery, f.inRecoveryErr }
 func (f *fakePG) GetReplicationSlot(_ context.Context, name string) (*pg.ReplicationSlot, error) {
 	// If a slot was created via CreateLogicalSlot, reflect it in subsequent reads.
 	if f.slot == nil && f.createdSlot == name {
