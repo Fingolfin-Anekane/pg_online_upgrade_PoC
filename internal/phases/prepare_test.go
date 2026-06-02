@@ -26,6 +26,7 @@ type fakePG struct {
 	walRcvActive bool
 	disconnected bool
 	replayLSN    string
+	checkpoints  int
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
