@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -15,12 +16,17 @@ import (
 type Client interface {
 	ShowWALLevel(ctx context.Context) (string, error)
 	IsInRecovery(ctx context.Context) (bool, error)
+	ServerVersionNum(ctx context.Context) (int, error)
+	ClearPrimaryConninfo(ctx context.Context) error
 	GetLastWALReplayLSN(ctx context.Context) (string, error)
 	GetWALReceiverReceivedLSN(ctx context.Context) (string, error)
+	IsWALReceiverActive(ctx context.Context) (bool, error)
+	DisconnectFromWAL(ctx context.Context) error
 	Checkpoint(ctx context.Context) error
 	GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error)
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
 	CreatePublication(ctx context.Context, name string) error
+	PublicationExists(ctx context.Context, name string) (bool, error)
 	CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error
 	GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error)
 	GetAllSequences(ctx context.Context) ([]SequenceInfo, error)
@@ -91,6 +97,31 @@ func (c *internalClient) IsInRecovery(ctx context.Context) (bool, error) {
 	return v, err
 }
 
+// ServerVersionNum returns the integer server version (e.g. 120008 for 12.8),
+// used to choose the version-appropriate WAL-disconnect mechanism.
+func (c *internalClient) ServerVersionNum(ctx context.Context) (int, error) {
+	var s string
+	if err := c.q.QueryRow(ctx, "SHOW server_version_num").Scan(&s); err != nil {
+		return 0, fmt.Errorf("pg: server_version_num: %w", err)
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("pg: server_version_num parse %q: %w", s, err)
+	}
+	return v, nil
+}
+
+// ClearPrimaryConninfo sets primary_conninfo empty via ALTER SYSTEM (writing
+// postgresql.auto.conf) WITHOUT reloading. On PG 12 the parameter is
+// PGC_POSTMASTER, so the caller must restart for it to take effect; on PG 13+
+// prefer DisconnectFromWAL (which also reloads).
+func (c *internalClient) ClearPrimaryConninfo(ctx context.Context) error {
+	if _, err := c.q.Exec(ctx, `ALTER SYSTEM SET primary_conninfo = ''`); err != nil {
+		return fmt.Errorf("pg: clear primary_conninfo: %w", err)
+	}
+	return nil
+}
+
 func (c *internalClient) GetLastWALReplayLSN(ctx context.Context) (string, error) {
 	var lsn string
 	err := c.q.QueryRow(ctx, "SELECT pg_last_wal_replay_lsn()::text").Scan(&lsn)
@@ -104,6 +135,29 @@ func (c *internalClient) GetWALReceiverReceivedLSN(ctx context.Context) (string,
 		return "", err
 	}
 	return *lsn, nil
+}
+
+// IsWALReceiverActive reports whether N1 is still streaming WAL from a primary.
+// pg_stat_wal_receiver has one row while a walreceiver is connected, none after.
+func (c *internalClient) IsWALReceiverActive(ctx context.Context) (bool, error) {
+	var active bool
+	err := c.q.QueryRow(ctx, `SELECT count(*) > 0 AS active FROM pg_stat_wal_receiver`).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("pg: query wal_receiver: %w", err)
+	}
+	return active, nil
+}
+
+// DisconnectFromWAL clears primary_conninfo and reloads, so N1 stops receiving
+// WAL. Patroni must be paused first or it will revert this.
+func (c *internalClient) DisconnectFromWAL(ctx context.Context) error {
+	if _, err := c.q.Exec(ctx, `ALTER SYSTEM SET primary_conninfo = ''`); err != nil {
+		return fmt.Errorf("pg: clear primary_conninfo: %w", err)
+	}
+	if _, err := c.q.Exec(ctx, `SELECT pg_reload_conf()`); err != nil {
+		return fmt.Errorf("pg: reload conf: %w", err)
+	}
+	return nil
 }
 
 func (c *internalClient) Checkpoint(ctx context.Context) error {
@@ -138,6 +192,16 @@ func (c *internalClient) CreateLogicalSlot(ctx context.Context, name, plugin str
 func (c *internalClient) CreatePublication(ctx context.Context, name string) error {
 	_, err := c.q.Exec(ctx, fmt.Sprintf("CREATE PUBLICATION %s FOR ALL TABLES", pgx.Identifier{name}.Sanitize()))
 	return err
+}
+
+// PublicationExists reports whether a publication with the given name exists.
+func (c *internalClient) PublicationExists(ctx context.Context, name string) (bool, error) {
+	var exists bool
+	err := c.q.QueryRow(ctx, `SELECT count(*) > 0 FROM pg_publication WHERE pubname = $1`, name).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("pg: query publication: %w", err)
+	}
+	return exists, nil
 }
 
 func (c *internalClient) CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error {
@@ -263,11 +327,23 @@ func (p *PoolClient) ShowWALLevel(ctx context.Context) (string, error) {
 func (p *PoolClient) IsInRecovery(ctx context.Context) (bool, error) {
 	return p.ic().IsInRecovery(ctx)
 }
+func (p *PoolClient) ServerVersionNum(ctx context.Context) (int, error) {
+	return p.ic().ServerVersionNum(ctx)
+}
+func (p *PoolClient) ClearPrimaryConninfo(ctx context.Context) error {
+	return p.ic().ClearPrimaryConninfo(ctx)
+}
 func (p *PoolClient) GetLastWALReplayLSN(ctx context.Context) (string, error) {
 	return p.ic().GetLastWALReplayLSN(ctx)
 }
 func (p *PoolClient) GetWALReceiverReceivedLSN(ctx context.Context) (string, error) {
 	return p.ic().GetWALReceiverReceivedLSN(ctx)
+}
+func (p *PoolClient) IsWALReceiverActive(ctx context.Context) (bool, error) {
+	return p.ic().IsWALReceiverActive(ctx)
+}
+func (p *PoolClient) DisconnectFromWAL(ctx context.Context) error {
+	return p.ic().DisconnectFromWAL(ctx)
 }
 func (p *PoolClient) Checkpoint(ctx context.Context) error { return p.ic().Checkpoint(ctx) }
 func (p *PoolClient) GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error) {
@@ -278,6 +354,9 @@ func (p *PoolClient) CreateLogicalSlot(ctx context.Context, name, plugin string)
 }
 func (p *PoolClient) CreatePublication(ctx context.Context, name string) error {
 	return p.ic().CreatePublication(ctx, name)
+}
+func (p *PoolClient) PublicationExists(ctx context.Context, name string) (bool, error) {
+	return p.ic().PublicationExists(ctx, name)
 }
 func (p *PoolClient) CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error {
 	return p.ic().CreateSubscription(ctx, name, connStr, pubName, slotName)

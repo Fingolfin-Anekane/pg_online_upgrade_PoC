@@ -5,8 +5,15 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
+	pgclient "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
+	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
+	"github.com/dmbabuev/pg-upgrade/internal/connect"
+	"github.com/dmbabuev/pg-upgrade/internal/phases"
+	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/dmbabuev/pg-upgrade/internal/slotdrain"
+	"github.com/dmbabuev/pg-upgrade/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +35,7 @@ func rootCmd() *cobra.Command {
 
 	root.AddCommand(drainSlotCmd(&cfgPath))
 	root.AddCommand(statusCmd(&cfgPath))
+	root.AddCommand(runCmd(&cfgPath))
 
 	return root
 }
@@ -99,4 +107,114 @@ func statusCmd(cfgPath *string) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func runCmd(cfgPath *string) *cobra.Command {
+	var statePath string
+	var headless bool
+
+	cmd := &cobra.Command{
+		Use:   "run",
+		Short: "Drive the upgrade through phases 1-4 (Prepare → Upgrade)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(*cfgPath)
+			if err != nil {
+				return err
+			}
+			if err := cfg.ValidateForRun(); err != nil {
+				return err
+			}
+			if statePath == "" {
+				statePath = "pg-upgrade-state.json"
+			}
+
+			ctx := context.Background()
+
+			// NewManager always starts Current at phases.FirstPhase ("prepare");
+			// resume an in-progress run by loading the existing state file.
+			var mgr *state.Manager
+			if _, statErr := os.Stat(statePath); statErr == nil {
+				mgr, err = state.LoadManager(statePath)
+			} else {
+				mgr, err = state.NewManager(statePath, cfg.ClusterName)
+			}
+			if err != nil {
+				return err
+			}
+
+			// N1-local PG client.
+			n1DSN, err := connect.DSNForHost(cfg.PG.SuperuserDSN, "localhost")
+			if err != nil {
+				return err
+			}
+			n1, err := pgclient.NewFromDSN(ctx, n1DSN)
+			if err != nil {
+				return err
+			}
+			defer n1.Close()
+
+			primaryProvider, closePrimary := newPrimaryProvider(cfg.PG.SuperuserDSN, mgr)
+			defer closePrimary()
+			patClient := patroni.NewHTTPClient("http://localhost:8008")
+
+			d := phases.Deps{
+				Cfg:     *cfg,
+				Mgr:     mgr,
+				Patroni: patClient,
+				Tools:   pgbin.Exec{NewBindir: cfg.Upgrade.NewPGBindir, OldBindir: cfg.Upgrade.OldPGBindir},
+				N1:      n1,
+				Primary: primaryProvider,
+				Drain:   slotdrain.Drain,
+			}
+
+			mode := runner.Interactive
+			var cp runner.Checkpoint
+			if headless {
+				mode = runner.Headless
+			} else {
+				cp = runner.InteractiveCheckpoint(os.Stdin, os.Stdout, runner.DefaultPrompts())
+			}
+
+			r := runner.New(phases.Phases1to4(d), mgr, mode, cp)
+			if err := r.Run(ctx); err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stdout, "\nReached point of no return (pg_upgrade complete). Phases 5-8 (Catchup→Cleanup) arrive in Plan 3.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&statePath, "state", "", "Path to state file (default pg-upgrade-state.json)")
+	cmd.Flags().BoolVar(&headless, "headless", false, "Skip operator checkpoints (full automation)")
+	return cmd
+}
+
+// newPrimaryProvider returns a provider that builds (once) a PG client to the
+// primary host recorded in state by DiscoverTopology, plus a close func for it.
+func newPrimaryProvider(template string, mgr *state.Manager) (func(context.Context) (pgclient.Client, error), func()) {
+	var cached pgclient.Client
+	provider := func(ctx context.Context) (pgclient.Client, error) {
+		if cached != nil {
+			return cached, nil
+		}
+		host := mgr.Get().Artifacts.PrimaryHost
+		if host == "" {
+			return nil, fmt.Errorf("run: primary host not yet discovered")
+		}
+		dsn, err := connect.DSNForHost(template, host)
+		if err != nil {
+			return nil, err
+		}
+		c, err := pgclient.NewFromDSN(ctx, dsn)
+		if err != nil {
+			return nil, err
+		}
+		cached = c
+		return cached, nil
+	}
+	closeFn := func() {
+		if cached != nil {
+			cached.Close()
+		}
+	}
+	return provider, closeFn
 }
