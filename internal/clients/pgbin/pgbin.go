@@ -37,6 +37,7 @@ type PGTools interface {
 	Restart(ctx context.Context, dataDir string) error
 	UpgradeCheck(ctx context.Context, o UpgradeOptions) error
 	Upgrade(ctx context.Context, o UpgradeOptions) error
+	Start(ctx context.Context, bindir, dataDir string) error
 }
 
 // Exec is the real PGTools, invoking binaries under the given bindirs.
@@ -77,6 +78,12 @@ func (e Exec) StopClean(ctx context.Context, dataDir string) error {
 // apply a primary_conninfo change on PG < 13 where it is not reloadable.
 func (e Exec) Restart(ctx context.Context, dataDir string) error {
 	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "restart", "-m", "fast", "-w", "-D", dataDir), "restart")
+}
+
+// Start launches a stopped cluster with the given bindir's pg_ctl, waiting for
+// readiness. Used to bring PG17 up after pg_upgrade for the catchup subscription.
+func (e Exec) Start(ctx context.Context, bindir, dataDir string) error {
+	return run(exec.CommandContext(ctx, e.bin(bindir, "pg_ctl"), "start", "-w", "-D", dataDir), "start")
 }
 
 func (e Exec) UpgradeCheck(ctx context.Context, o UpgradeOptions) error {

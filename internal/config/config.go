@@ -23,6 +23,14 @@ type UpgradeConfig struct {
 	DataDir           string `yaml:"data_dir"`
 	NewDataDir        string `yaml:"new_data_dir"`
 	PatroniConfigPath string `yaml:"patroni_config_path"`
+	SubscriptionName  string `yaml:"subscription_name"`
+	ReversePubName    string `yaml:"reverse_pub_name"`
+	ReverseSubName    string `yaml:"reverse_sub_name"`
+	DBName            string `yaml:"dbname"`
+	PG17DSN           string `yaml:"pg17_dsn"`
+	NewPatroniURL     string `yaml:"new_patroni_url"`
+	DSNSwapSignalPath string `yaml:"dsn_swap_signal_path"`
+	SequenceBuffer    int64  `yaml:"sequence_buffer"`
 }
 
 type PGConfig struct {
@@ -62,6 +70,27 @@ func (c *Config) ValidateForRun() error {
 	}
 	if u.PatroniConfigPath == "" {
 		missing = append(missing, "patroni_config_path")
+	}
+	if u.SubscriptionName == "" {
+		missing = append(missing, "subscription_name")
+	}
+	if u.DBName == "" {
+		missing = append(missing, "dbname")
+	}
+	if u.PG17DSN == "" {
+		missing = append(missing, "pg17_dsn")
+	}
+	if u.NewPatroniURL == "" {
+		missing = append(missing, "new_patroni_url")
+	}
+	if u.DSNSwapSignalPath == "" {
+		missing = append(missing, "dsn_swap_signal_path")
+	}
+	if u.ReversePubName == "" {
+		missing = append(missing, "reverse_pub_name")
+	}
+	if u.ReverseSubName == "" {
+		missing = append(missing, "reverse_sub_name")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: run requires upgrade fields: %s", strings.Join(missing, ", "))

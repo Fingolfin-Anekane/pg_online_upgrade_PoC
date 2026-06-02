@@ -28,6 +28,8 @@ type Client interface {
 	CreatePublication(ctx context.Context, name string) error
 	PublicationExists(ctx context.Context, name string) (bool, error)
 	CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error
+	CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error
+	DisableSubscription(ctx context.Context, name string) error
 	GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error)
 	GetAllSequences(ctx context.Context) ([]SequenceInfo, error)
 	SetSequenceValue(ctx context.Context, schema, name string, value int64) error
@@ -217,6 +219,24 @@ func (c *internalClient) CreateSubscription(ctx context.Context, name, connStr, 
 	return err
 }
 
+// CreateSubscriptionCreatingSlot creates a subscription that CREATES its own
+// replication slot on the publisher (create_slot=true). Used for the reverse
+// rollback subscription, whose slot does not pre-exist.
+func (c *internalClient) CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error {
+	sql := fmt.Sprintf(
+		"CREATE SUBSCRIPTION %s CONNECTION %s PUBLICATION %s "+
+			"WITH (copy_data = false, create_slot = true, enabled = true)",
+		pgx.Identifier{name}.Sanitize(), quoteString(connStr), pgx.Identifier{pubName}.Sanitize())
+	_, err := c.q.Exec(ctx, sql)
+	return err
+}
+
+// DisableSubscription stops a subscription's apply worker without dropping it.
+func (c *internalClient) DisableSubscription(ctx context.Context, name string) error {
+	_, err := c.q.Exec(ctx, fmt.Sprintf("ALTER SUBSCRIPTION %s DISABLE", pgx.Identifier{name}.Sanitize()))
+	return err
+}
+
 func (c *internalClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	var lag SubscriptionLag
 	err := c.q.QueryRow(ctx,
@@ -360,6 +380,12 @@ func (p *PoolClient) PublicationExists(ctx context.Context, name string) (bool, 
 }
 func (p *PoolClient) CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error {
 	return p.ic().CreateSubscription(ctx, name, connStr, pubName, slotName)
+}
+func (p *PoolClient) CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error {
+	return p.ic().CreateSubscriptionCreatingSlot(ctx, name, connStr, pubName)
+}
+func (p *PoolClient) DisableSubscription(ctx context.Context, name string) error {
+	return p.ic().DisableSubscription(ctx, name)
 }
 func (p *PoolClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	return p.ic().GetSubscriptionLag(ctx, name)

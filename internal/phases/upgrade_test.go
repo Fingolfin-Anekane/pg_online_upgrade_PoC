@@ -26,6 +26,7 @@ type fakeTools struct {
 	checked   bool
 	upgraded  bool
 	restarted bool
+	started   bool
 	onPromote func()
 }
 
@@ -51,7 +52,8 @@ func (f *fakeTools) Upgrade(context.Context, pgbin.UpgradeOptions) error {
 	f.upgraded = true
 	return nil
 }
-func (f *fakeTools) Restart(context.Context, string) error { f.restarted = true; return nil }
+func (f *fakeTools) Restart(context.Context, string) error       { f.restarted = true; return nil }
+func (f *fakeTools) Start(context.Context, string, string) error { f.started = true; return nil }
 
 func TestUpgradeHappyPath(t *testing.T) {
 	mgr := testMgr(t)

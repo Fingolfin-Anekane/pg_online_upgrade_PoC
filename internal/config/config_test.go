@@ -66,6 +66,9 @@ func TestValidateForRun(t *testing.T) {
 	cfg := &config.Config{Upgrade: config.UpgradeConfig{
 		TargetNode: "n1", OldPGBindir: "/o", NewPGBindir: "/n",
 		DataDir: "/old", NewDataDir: "/new", PatroniConfigPath: "/p.yml",
+		SubscriptionName: "sub_upgrade", ReversePubName: "pub_rb", ReverseSubName: "sub_rb",
+		DBName: "app", PG17DSN: "host=localhost port=5433", NewPatroniURL: "http://localhost:8009",
+		DSNSwapSignalPath: "/run/sig.json",
 	}}
 	require.NoError(t, cfg.ValidateForRun())
 
@@ -74,6 +77,9 @@ func TestValidateForRun(t *testing.T) {
 
 	cfg2 := &config.Config{Upgrade: config.UpgradeConfig{
 		TargetNode: "n1", OldPGBindir: "/o", DataDir: "/same", NewDataDir: "/same", PatroniConfigPath: "/p",
+		SubscriptionName: "sub_upgrade", ReversePubName: "pub_rb", ReverseSubName: "sub_rb",
+		DBName: "app", PG17DSN: "host=localhost port=5433", NewPatroniURL: "http://localhost:8009",
+		DSNSwapSignalPath: "/run/sig.json",
 	}}
 	assert.ErrorContains(t, cfg2.ValidateForRun(), "new_data_dir must differ")
 }
