@@ -26,8 +26,10 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "loadtool",
-		Short: "Load + correctness harness for pg-upgrade",
+		Use:           "loadtool",
+		Short:         "Load + correctness harness for pg-upgrade",
+		SilenceErrors: true, // main is the single error reporter
+		SilenceUsage:  true, // don't dump usage on a runtime error
 	}
 	root.AddCommand(initCmd(), runCmd(), verifyCmd())
 	return root
@@ -170,6 +172,8 @@ func verifyCmd() *cobra.Command {
 				return err
 			}
 			ctx := cmd.Context()
+			// verify needs only oracle.Querier (read-only), which *pgxpool.Pool
+			// satisfies directly, so it doesn't go through openPool.
 			pool, err := pgxpool.New(ctx, cfg.DSNB)
 			if err != nil {
 				return err
@@ -182,6 +186,8 @@ func verifyCmd() *cobra.Command {
 			if err := oracle.Render(os.Stdout, f); err != nil {
 				return err
 			}
+			// os.Exit skips the deferred pool.Close above; that's fine, the
+			// process is exiting and the OS reclaims the connections.
 			if f.Failed() {
 				os.Exit(2)
 			}
