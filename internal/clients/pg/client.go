@@ -30,6 +30,7 @@ type Client interface {
 	CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error
 	CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error
 	DisableSubscription(ctx context.Context, name string) error
+	CountAppBackends(ctx context.Context) (int, error)
 	GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error)
 	GetAllSequences(ctx context.Context) ([]SequenceInfo, error)
 	SetSequenceValue(ctx context.Context, schema, name string, value int64) error
@@ -237,6 +238,19 @@ func (c *internalClient) DisableSubscription(ctx context.Context, name string) e
 	return err
 }
 
+// CountAppBackends counts client backends excluding background/replication
+// workers, used to confirm application traffic has moved to the new primary.
+func (c *internalClient) CountAppBackends(ctx context.Context) (int, error) {
+	var n int
+	err := c.q.QueryRow(ctx,
+		"SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()").
+		Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("pg: count app backends: %w", err)
+	}
+	return n, nil
+}
+
 func (c *internalClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	var lag SubscriptionLag
 	err := c.q.QueryRow(ctx,
@@ -387,6 +401,9 @@ func (p *PoolClient) CreateSubscriptionCreatingSlot(ctx context.Context, name, c
 }
 func (p *PoolClient) DisableSubscription(ctx context.Context, name string) error {
 	return p.ic().DisableSubscription(ctx, name)
+}
+func (p *PoolClient) CountAppBackends(ctx context.Context) (int, error) {
+	return p.ic().CountAppBackends(ctx)
 }
 func (p *PoolClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	return p.ic().GetSubscriptionLag(ctx, name)

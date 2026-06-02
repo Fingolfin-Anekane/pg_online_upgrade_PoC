@@ -34,6 +34,9 @@ type fakePG struct {
 	frozen          string
 	sequences       []pg.SequenceInfo
 	setSeqs         []seqSet
+	createdRevSub   string
+	disabledSub     string
+	appBackends     int
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }

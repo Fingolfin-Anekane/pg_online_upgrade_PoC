@@ -225,3 +225,15 @@ func TestCreateSubscriptionCreatingSlot(t *testing.T) {
 	require.NoError(t, c.CreateSubscriptionCreatingSlot(context.Background(), "sub_rollback", "host=n1", "pub_rollback"))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestCountAppBackends(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectQuery("client backend").WillReturnRows(pgxmock.NewRows([]string{"n"}).AddRow(3))
+	c := pgclient.NewFromPool(mock)
+	n, err := c.CountAppBackends(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

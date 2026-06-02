@@ -11,10 +11,6 @@ import (
 // drain the final lag, sync sequences, set up reverse replication, signal the
 // DSN swap, verify traffic moved, and disable the forward subscription. Terminal
 // in Plan 3 (the run pauses at the rollback window; Plan 4 adds Finalize).
-//
-// NOTE: this task (Plan 3 Task 4) implements only the first three steps. Task 5
-// appends the remaining four to this slice (and defines their types), so the
-// slice lists ONLY the three steps defined below.
 func NewSwitchover(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "switchover",
@@ -22,6 +18,10 @@ func NewSwitchover(d Deps) runner.Phase {
 			&freezeOldPrimary{d},
 			&waitFinalLagZero{d},
 			&syncSequences{d},
+			&setupReverseReplication{d},
+			&notifyDSNSwap{d},
+			&verifyTrafficOnNew{d},
+			&disableForwardSubscription{d},
 		},
 		trans: nil, // terminal in Plan 3: paused at the rollback window
 	}
@@ -103,8 +103,88 @@ func (s *syncSequences) Run(ctx context.Context) error {
 	return s.d.Mgr.SetSequencesSynced()
 }
 
+// --- SetupReverseReplication (PG17 publishes; old primary subscribes back) ---
+
+type setupReverseReplication struct{ d Deps }
+
+func (s *setupReverseReplication) ID() runner.StepID                   { return "SetupReverseReplication" }
+func (s *setupReverseReplication) Check(context.Context) (bool, error) { return false, nil }
+func (s *setupReverseReplication) Run(ctx context.Context) error {
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return err
+	}
+	old, err := s.d.Primary(ctx)
+	if err != nil {
+		return err
+	}
+	// Publication on the new primary.
+	if err := pg17.CreatePublication(ctx, s.d.Cfg.Upgrade.ReversePubName); err != nil {
+		return err
+	}
+	// Subscription on the old primary, pointing back at PG17 (creates its own slot
+	// on PG17). The old primary's apply worker runs as session_replication_role
+	// 'replica', so the DML freeze triggers do not fire for it.
+	return old.CreateSubscriptionCreatingSlot(ctx, s.d.Cfg.Upgrade.ReverseSubName, s.d.Cfg.Upgrade.PG17DSN, s.d.Cfg.Upgrade.ReversePubName)
+}
+
+// --- NotifyDSNSwap (signal external tooling; operator confirms via checkpoint) ---
+
+type notifyDSNSwap struct{ d Deps }
+
+func (s *notifyDSNSwap) ID() runner.StepID { return "NotifyDSNSwap" }
+func (s *notifyDSNSwap) Check(context.Context) (bool, error) {
+	return s.d.Mgr.Get().Artifacts.DSNSwapNotified, nil
+}
+func (s *notifyDSNSwap) Run(_ context.Context) error {
+	if err := WriteDSNSwapSignal(s.d.WriteSignal, s.d.Cfg.Upgrade.DSNSwapSignalPath,
+		s.d.Cfg.Upgrade.PG17DSN, s.d.Cfg.ClusterName); err != nil {
+		return err
+	}
+	return s.d.Mgr.SetDSNSwapNotified()
+}
+
+// --- VerifyTrafficOnNew (delegated swap; binary verifies traffic arrived) ---
+
+type verifyTrafficOnNew struct{ d Deps }
+
+func (s *verifyTrafficOnNew) ID() runner.StepID                   { return "VerifyTrafficOnNew" }
+func (s *verifyTrafficOnNew) Check(context.Context) (bool, error) { return false, nil } // always verify
+func (s *verifyTrafficOnNew) Run(ctx context.Context) error {
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return err
+	}
+	n, err := pg17.CountAppBackends(ctx)
+	if err != nil {
+		return err
+	}
+	if n < 1 {
+		return fmt.Errorf("switchover: no application traffic on the new primary yet (perform the DSN swap, then re-run)")
+	}
+	return nil
+}
+
+// --- DisableForwardSubscription (stop forward apply now that writes are on PG17) ---
+
+type disableForwardSubscription struct{ d Deps }
+
+func (s *disableForwardSubscription) ID() runner.StepID                   { return "DisableForwardSubscription" }
+func (s *disableForwardSubscription) Check(context.Context) (bool, error) { return false, nil }
+func (s *disableForwardSubscription) Run(ctx context.Context) error {
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return err
+	}
+	return pg17.DisableSubscription(ctx, s.d.Cfg.Upgrade.SubscriptionName)
+}
+
 var (
 	_ runner.Step = (*freezeOldPrimary)(nil)
 	_ runner.Step = (*waitFinalLagZero)(nil)
 	_ runner.Step = (*syncSequences)(nil)
+	_ runner.Step = (*setupReverseReplication)(nil)
+	_ runner.Step = (*notifyDSNSwap)(nil)
+	_ runner.Step = (*verifyTrafficOnNew)(nil)
+	_ runner.Step = (*disableForwardSubscription)(nil)
 )
