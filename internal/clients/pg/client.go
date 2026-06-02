@@ -23,6 +23,7 @@ type Client interface {
 	GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error)
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
 	CreatePublication(ctx context.Context, name string) error
+	PublicationExists(ctx context.Context, name string) (bool, error)
 	CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error
 	GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error)
 	GetAllSequences(ctx context.Context) ([]SequenceInfo, error)
@@ -163,6 +164,16 @@ func (c *internalClient) CreateLogicalSlot(ctx context.Context, name, plugin str
 func (c *internalClient) CreatePublication(ctx context.Context, name string) error {
 	_, err := c.q.Exec(ctx, fmt.Sprintf("CREATE PUBLICATION %s FOR ALL TABLES", pgx.Identifier{name}.Sanitize()))
 	return err
+}
+
+// PublicationExists reports whether a publication with the given name exists.
+func (c *internalClient) PublicationExists(ctx context.Context, name string) (bool, error) {
+	var exists bool
+	err := c.q.QueryRow(ctx, `SELECT count(*) > 0 FROM pg_publication WHERE pubname = $1`, name).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("pg: query publication: %w", err)
+	}
+	return exists, nil
 }
 
 func (c *internalClient) CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error {
@@ -309,6 +320,9 @@ func (p *PoolClient) CreateLogicalSlot(ctx context.Context, name, plugin string)
 }
 func (p *PoolClient) CreatePublication(ctx context.Context, name string) error {
 	return p.ic().CreatePublication(ctx, name)
+}
+func (p *PoolClient) PublicationExists(ctx context.Context, name string) (bool, error) {
+	return p.ic().PublicationExists(ctx, name)
 }
 func (p *PoolClient) CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error {
 	return p.ic().CreateSubscription(ctx, name, connStr, pubName, slotName)

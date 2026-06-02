@@ -161,3 +161,19 @@ func TestDisconnectFromWAL(t *testing.T) {
 	require.NoError(t, c.DisconnectFromWAL(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestPublicationExists(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery("FROM pg_publication").
+		WithArgs("pub_up").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+
+	c := pgclient.NewFromPool(mock)
+	exists, err := c.PublicationExists(context.Background(), "pub_up")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

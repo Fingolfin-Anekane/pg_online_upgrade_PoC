@@ -41,6 +41,9 @@ func (f *fakePG) CreateLogicalSlot(_ context.Context, name, plugin string) (*pg.
 	f.createdSlot = name
 	return &pg.ReplicationSlot{Name: name, RestartLSN: "0/10", ConfirmedFlushLSN: "0/10"}, nil
 }
+func (f *fakePG) PublicationExists(_ context.Context, name string) (bool, error) {
+	return f.createdPub == name, nil
+}
 
 // fakePatroni implements patroni.Client.
 type fakePatroni struct {
@@ -99,4 +102,38 @@ func TestPrepareTransitionsToIsolate(t *testing.T) {
 	tr := ph.Transitions()
 	require.Len(t, tr, 1)
 	assert.Equal(t, "isolate", tr[0].To)
+}
+
+func TestPrepareNoLeaderFails(t *testing.T) {
+	pat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
+		{Name: "a", Host: "a", Role: "replica"},
+		{Name: "b", Host: "b", Role: "replica"},
+	}}}
+	d := Deps{Mgr: testMgr(t), Patroni: pat}
+	step := &discoverTopology{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no leader")
+}
+
+func TestPrepareRejectsNonLogicalWALLevel(t *testing.T) {
+	primary := &fakePG{walLevel: "replica"}
+	d := Deps{Mgr: testMgr(t), N1: &fakePG{inRecovery: true},
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	step := &verifyPrerequisites{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wal_level")
+}
+
+func TestPrepareRejectsNonReplicaN1(t *testing.T) {
+	primary := &fakePG{walLevel: "logical"}
+	n1 := &fakePG{inRecovery: false} // not a replica
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{TargetNode: "n1"}},
+		Mgr: testMgr(t), N1: n1,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	step := &verifyPrerequisites{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in recovery")
 }

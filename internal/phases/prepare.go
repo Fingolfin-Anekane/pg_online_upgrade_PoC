@@ -49,12 +49,11 @@ func (s *discoverTopology) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, m := range cluster.Members {
-		if m.Role == "leader" {
-			return s.d.Mgr.SetPrimaryHost(m.Host)
-		}
+	leader := cluster.Leader()
+	if leader == nil {
+		return fmt.Errorf("prepare: no leader in Patroni cluster")
 	}
-	return fmt.Errorf("prepare: no leader in Patroni cluster")
+	return s.d.Mgr.SetPrimaryHost(leader.Host)
 }
 
 // --- VerifyPrerequisites ---
@@ -91,9 +90,13 @@ type createPublication struct{ d Deps }
 
 func (s *createPublication) ID() runner.StepID { return "CreatePublication" }
 func (s *createPublication) Check(ctx context.Context) (bool, error) {
-	// Idempotency handled by CREATE PUBLICATION ... IF NOT EXISTS in the client;
-	// re-running is safe, so never skip.
-	return false, nil
+	primary, err := s.d.Primary(ctx)
+	if err != nil {
+		return false, err
+	}
+	// pg has no CREATE PUBLICATION IF NOT EXISTS, so skip the create when the
+	// publication already exists (idempotent resume).
+	return primary.PublicationExists(ctx, s.d.Cfg.Upgrade.PublicationName)
 }
 func (s *createPublication) Run(ctx context.Context) error {
 	primary, err := s.d.Primary(ctx)
