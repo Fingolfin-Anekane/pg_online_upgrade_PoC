@@ -8,8 +8,10 @@ import (
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 )
 
-// NewCatchup builds Phase 5: start PG17, subscribe to the old primary, catch up,
-// and verify the operator-formed new Patroni cluster is healthy.
+// NewCatchup builds Phase 5. The spec's InitNewPatroniCluster and AddReplicas
+// steps are operator-driven (forming the new Patroni cluster on N1/N2/N3 is out
+// of the single-binary scope); the binary verifies the result in
+// VerifyNewClusterHealthy rather than performing the formation.
 func NewCatchup(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "catchup",
@@ -29,10 +31,13 @@ type startPG17 struct{ d Deps }
 
 func (s *startPG17) ID() runner.StepID { return "StartPG17OnN1" }
 func (s *startPG17) Check(ctx context.Context) (bool, error) {
-	// done if PG17 already accepts connections
+	// "done" means PG17 already accepts connections. A connection/query error is
+	// treated as "not up yet -> start it"; we do not propagate it here because a
+	// genuinely misconfigured PG17 DSN surfaces as an error on the next step
+	// (CreateForwardSubscription), and Tools.Start is the operator-visible action.
 	c, err := s.d.PG17(ctx)
 	if err != nil {
-		return false, nil // not up yet
+		return false, nil
 	}
 	if _, err := c.IsInRecovery(ctx); err != nil {
 		return false, nil

@@ -70,3 +70,38 @@ func TestCatchupTransitionsToSwitchover(t *testing.T) {
 	require.Len(t, tr, 1)
 	assert.Equal(t, "switchover", tr[0].To)
 }
+
+func TestCreateForwardSubscriptionSkipsWhenExists(t *testing.T) {
+	pg17 := &fakePG{subLag: &pg.SubscriptionLag{}} // subscription already exists
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SubscriptionName: "sub_up"}},
+		PG17: func(context.Context) (pg.Client, error) { return pg17, nil }}
+	done, err := (&createForwardSubscription{d}).Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.Equal(t, "", pg17.createdSub) // create skipped
+}
+
+func TestVerifyNewClusterHealthyRejectsNoLeader(t *testing.T) {
+	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{{Name: "a", Role: "replica"}}}}
+	err := (&verifyNewClusterHealthy{Deps{NewPatroni: newPat}}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no leader")
+}
+
+func TestVerifyNewClusterHealthyRejectsNoReplica(t *testing.T) {
+	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{{Name: "n1", Role: "leader"}}}}
+	err := (&verifyNewClusterHealthy{Deps{NewPatroni: newPat}}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no replica")
+}
+
+func TestWaitLagZeroErrorsWhenBehind(t *testing.T) {
+	pg17 := &fakePG{subLag: &pg.SubscriptionLag{ReplayLagMs: 500}}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SubscriptionName: "sub_up"}},
+		PG17: func(context.Context) (pg.Client, error) { return pg17, nil }}
+	step := &waitLagZero{d}
+	done, err := step.Check(context.Background())
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.Error(t, step.Run(context.Background()))
+}
