@@ -34,6 +34,9 @@ func New(phases []Phase, mgr *state.Manager, mode RunMode, cp Checkpoint) *Runne
 // (terminal) or a step/checkpoint fails.
 func (r *Runner) Run(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		cur := r.mgr.Get().Current
 		phase, ok := r.phases[cur]
 		if !ok {
@@ -42,7 +45,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := r.executePhase(ctx, phase); err != nil {
 			return err
 		}
-		next := r.transition(phase)
+		next, err := r.transition(phase)
+		if err != nil {
+			return err
+		}
 		if next == "" {
 			return nil // terminal phase reached
 		}
@@ -84,13 +90,20 @@ func (r *Runner) executePhase(ctx context.Context, phase Phase) error {
 }
 
 // transition returns the target of the first transition whose condition matches
-// (nil condition always matches); "" if none match (terminal).
-func (r *Runner) transition(phase Phase) PhaseID {
+// (nil condition always matches). If transitions exist but none match, the phase
+// gate is unmet and an error is returned. If no transitions are declared the
+// phase is terminal and "" is returned.
+func (r *Runner) transition(phase Phase) (PhaseID, error) {
 	st := r.mgr.Get()
-	for _, t := range phase.Transitions() {
+	ts := phase.Transitions()
+	for _, t := range ts {
 		if t.Condition == nil || t.Condition(st) {
-			return t.To
+			return t.To, nil
 		}
 	}
-	return ""
+	if len(ts) > 0 {
+		// transitions exist but none matched: the phase gate is unmet, not done.
+		return "", fmt.Errorf("runner: %s: no transition condition matched (phase incomplete)", phase.ID())
+	}
+	return "", nil // explicit terminal: phase declares no transitions
 }

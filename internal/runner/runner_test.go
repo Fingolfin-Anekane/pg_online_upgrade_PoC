@@ -106,3 +106,33 @@ func TestRunnerInteractiveCheckpointAbort(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "a", mgr.Get().Current) // aborted before advancing
 }
+
+func TestRunnerStopsOnCheckError(t *testing.T) {
+	s1 := &fakeStep{id: "s1", checkErr: errors.New("check boom")}
+	a := &fakePhase{id: "a", steps: []Step{s1}, trans: []Transition{{To: "b"}}}
+	mgr := newMgr(t, "a")
+	r := New([]Phase{a}, mgr, Headless, nil)
+	err := r.Run(context.Background())
+	require.Error(t, err)
+	assert.False(t, s1.ran) // never ran: check failed first
+	assert.Equal(t, "a", mgr.Get().Current)
+}
+
+func TestRunnerUnknownPhase(t *testing.T) {
+	mgr := newMgr(t, "ghost") // no phase with this id is registered
+	r := New([]Phase{}, mgr, Headless, nil)
+	err := r.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown phase")
+}
+
+func TestRunnerNoMatchingTransitionErrors(t *testing.T) {
+	a := &fakePhase{id: "a", trans: []Transition{
+		{To: "x", Condition: func(*state.State) bool { return false }},
+	}}
+	mgr := newMgr(t, "a")
+	r := New([]Phase{a}, mgr, Headless, nil)
+	err := r.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no transition")
+}
