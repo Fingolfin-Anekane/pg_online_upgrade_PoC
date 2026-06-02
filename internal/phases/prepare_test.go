@@ -17,11 +17,15 @@ import (
 // declared here and reused by isolate_test.go / upgrade_test.go (same package).
 type fakePG struct {
 	pg.Client
-	walLevel    string
-	inRecovery  bool
-	slot        *pg.ReplicationSlot
-	createdPub  string
-	createdSlot string
+	walLevel     string
+	inRecovery   bool
+	slot         *pg.ReplicationSlot
+	createdPub   string
+	createdSlot  string
+	receivedLSN  string
+	walRcvActive bool
+	disconnected bool
+	replayLSN    string
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
