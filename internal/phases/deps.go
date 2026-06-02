@@ -29,4 +29,14 @@ type Deps struct {
 
 	// Drain runs the slot drain (injected for testability).
 	Drain func(ctx context.Context, cfg slotdrain.Config) (*slotdrain.Report, error)
+
+	// PG17 returns a client to the upgraded PG17 on N1 (new cluster primary).
+	PG17 func(ctx context.Context) (pg.Client, error)
+
+	// NewPatroni is the new cluster's Patroni REST client (separate from Patroni,
+	// which manages the old, paused cluster).
+	NewPatroni patroni.Client
+
+	// WriteSignal persists the DSN-swap signal file (injected for testability).
+	WriteSignal func(path string, data []byte) error
 }
