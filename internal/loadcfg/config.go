@@ -15,6 +15,16 @@ import (
 type Duration time.Duration
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	// yaml.v3 coerces integer nodes to string on Decode(&s), so check the tag
+	// to route integer YAML values (nanoseconds) before attempting string parse.
+	if value.Tag == "!!int" {
+		var n int64
+		if err := value.Decode(&n); err != nil {
+			return fmt.Errorf(`loadcfg: duration must be a string like "30s" or an integer ns: %w`, err)
+		}
+		*d = Duration(n)
+		return nil
+	}
 	var s string
 	if err := value.Decode(&s); err == nil {
 		parsed, perr := time.ParseDuration(s)
@@ -24,12 +34,7 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 		*d = Duration(parsed)
 		return nil
 	}
-	var n int64
-	if err := value.Decode(&n); err != nil {
-		return fmt.Errorf(`loadcfg: duration must be a string like "30s" or an integer ns`)
-	}
-	*d = Duration(n)
-	return nil
+	return fmt.Errorf(`loadcfg: duration must be a string like "30s" or an integer ns`)
 }
 
 type WorkerSet struct {
@@ -89,6 +94,10 @@ func Load(path string) (Config, error) {
 }
 
 // ValidateRun checks the fields required by the `run` subcommand.
+// It is a separate exported method rather than being called inside Load because
+// only the `run` subcommand requires DSNs — `init` and `verify` deliberately do not.
+// It does NOT require Duration > 0: a zero Duration means "run until SIGINT"
+// and is a valid, intended configuration.
 func (c Config) ValidateRun() error {
 	if c.DSNA == "" {
 		return fmt.Errorf("loadcfg: dsn_a is required")

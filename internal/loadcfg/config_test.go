@@ -38,6 +38,16 @@ func TestLoadYAMLOverridesDefaults(t *testing.T) {
 	assert.Equal(t, 2, cfg.Workers.Transfer.Count)
 }
 
+func TestLoadYAMLDurationIntegerNanoseconds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("duration: 1500000000\n"), 0o644))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1500*time.Millisecond, time.Duration(cfg.Duration))
+}
+
 func TestValidateRequiresDSNs(t *testing.T) {
 	cfg := Default()
 	assert.Error(t, cfg.ValidateRun())
