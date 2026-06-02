@@ -26,6 +26,7 @@ type fakeTools struct {
 	checked   bool
 	upgraded  bool
 	restarted bool
+	started   bool
 	onPromote func()
 }
 
@@ -51,7 +52,8 @@ func (f *fakeTools) Upgrade(context.Context, pgbin.UpgradeOptions) error {
 	f.upgraded = true
 	return nil
 }
-func (f *fakeTools) Restart(context.Context, string) error { f.restarted = true; return nil }
+func (f *fakeTools) Restart(context.Context, string) error       { f.restarted = true; return nil }
+func (f *fakeTools) Start(context.Context, string, string) error { f.started = true; return nil }
 
 func TestUpgradeHappyPath(t *testing.T) {
 	mgr := testMgr(t)
@@ -77,7 +79,8 @@ func TestUpgradeHappyPath(t *testing.T) {
 
 	ph := NewUpgrade(d)
 	assert.Equal(t, "upgrade", ph.ID())
-	assert.Empty(t, ph.Transitions()) // terminal in Plan 2
+	require.Len(t, ph.Transitions(), 1)
+	assert.Equal(t, "catchup", ph.Transitions()[0].To)
 
 	for _, s := range ph.Steps() {
 		done, err := s.Check(context.Background())

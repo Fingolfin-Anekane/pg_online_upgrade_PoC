@@ -53,6 +53,7 @@ type Artifacts struct {
 	PG17SYSID            string        `json:"pg17_sysid,omitempty"`
 	SequencesSynced      bool          `json:"sequences_synced"`
 	DSNSwapNotified      bool          `json:"dsn_swap_notified"`
+	ReverseReplSetUp     bool          `json:"reverse_repl_set_up"`
 }
 
 type SlotBaseline struct {

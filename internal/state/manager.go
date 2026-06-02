@@ -127,6 +127,11 @@ func (m *Manager) SetDSNSwapNotified() error {
 	return m.persist()
 }
 
+func (m *Manager) SetReverseReplSetUp() error {
+	m.state.Artifacts.ReverseReplSetUp = true
+	return m.persist()
+}
+
 func (m *Manager) ensurePhase(phase string) {
 	if _, ok := m.state.Phases[phase]; !ok {
 		m.state.Phases[phase] = PhaseState{

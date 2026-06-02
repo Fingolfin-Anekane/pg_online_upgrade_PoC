@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// DatabaseOf returns the database name a DSN connects to (keyword or URL form).
+func DatabaseOf(dsn string) (string, error) {
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "", fmt.Errorf("connect: parse dsn: %w", err)
+	}
+	return cfg.Database, nil
+}
+
 // DSNForHost parses template (keyword or URL form) and returns a keyword DSN
 // with Host replaced by host and all other connection parameters preserved.
 func DSNForHost(template, host string) (string, error) {

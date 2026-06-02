@@ -28,6 +28,9 @@ type Client interface {
 	CreatePublication(ctx context.Context, name string) error
 	PublicationExists(ctx context.Context, name string) (bool, error)
 	CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error
+	CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error
+	DisableSubscription(ctx context.Context, name string) error
+	CountAppBackends(ctx context.Context) (int, error)
 	GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error)
 	GetAllSequences(ctx context.Context) ([]SequenceInfo, error)
 	SetSequenceValue(ctx context.Context, schema, name string, value int64) error
@@ -217,6 +220,37 @@ func (c *internalClient) CreateSubscription(ctx context.Context, name, connStr, 
 	return err
 }
 
+// CreateSubscriptionCreatingSlot creates a subscription that CREATES its own
+// replication slot on the publisher (create_slot=true). Used for the reverse
+// rollback subscription, whose slot does not pre-exist.
+func (c *internalClient) CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error {
+	sql := fmt.Sprintf(
+		"CREATE SUBSCRIPTION %s CONNECTION %s PUBLICATION %s "+
+			"WITH (copy_data = false, create_slot = true, enabled = true)",
+		pgx.Identifier{name}.Sanitize(), quoteString(connStr), pgx.Identifier{pubName}.Sanitize())
+	_, err := c.q.Exec(ctx, sql)
+	return err
+}
+
+// DisableSubscription stops a subscription's apply worker without dropping it.
+func (c *internalClient) DisableSubscription(ctx context.Context, name string) error {
+	_, err := c.q.Exec(ctx, fmt.Sprintf("ALTER SUBSCRIPTION %s DISABLE", pgx.Identifier{name}.Sanitize()))
+	return err
+}
+
+// CountAppBackends counts client backends excluding background/replication
+// workers, used to confirm application traffic has moved to the new primary.
+func (c *internalClient) CountAppBackends(ctx context.Context) (int, error) {
+	var n int
+	err := c.q.QueryRow(ctx,
+		"SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()").
+		Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("pg: count app backends: %w", err)
+	}
+	return n, nil
+}
+
 func (c *internalClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	var lag SubscriptionLag
 	err := c.q.QueryRow(ctx,
@@ -246,6 +280,13 @@ func (c *internalClient) SetSequenceValue(ctx context.Context, schema, name stri
 	return err
 }
 
+// FreezeForUpgrade installs DML triggers on all user tables that raise an
+// error for any INSERT/UPDATE/DELETE/TRUNCATE. Enforcement is purely
+// trigger-based: sessions with session_replication_role='replica' (the
+// reverse-apply worker) bypass the triggers and can still write, preserving
+// the rollback window. The database-level default_transaction_read_only is
+// intentionally NOT set — it would block the replica-role apply worker too.
+// The dbname parameter documents intent; the freeze acts on the connection's current database (the run command validates that this matches dbname).
 func (c *internalClient) FreezeForUpgrade(ctx context.Context, dbname string) error {
 	_, err := c.q.Exec(ctx, `
 		CREATE OR REPLACE FUNCTION raise_upgrade_readonly() RETURNS trigger AS $$
@@ -264,20 +305,16 @@ func (c *internalClient) FreezeForUpgrade(ctx context.Context, dbname string) er
 				FROM pg_tables
 				WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
 			LOOP
+				EXECUTE format('DROP TRIGGER IF EXISTS upgrade_freeze ON %s', t);
 				EXECUTE format(
 					'CREATE TRIGGER upgrade_freeze
 					 BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON %s
-					 FOR EACH STATEMENT EXECUTE FUNCTION raise_upgrade_readonly()',
+					 FOR EACH STATEMENT EXECUTE PROCEDURE raise_upgrade_readonly()',
 					t);
 			END LOOP;
 		END;
 		$$;
 	`)
-	if err != nil {
-		return err
-	}
-	_, err = c.q.Exec(ctx, fmt.Sprintf("ALTER DATABASE %s SET default_transaction_read_only = on",
-		pgx.Identifier{dbname}.Sanitize()))
 	return err
 }
 
@@ -360,6 +397,15 @@ func (p *PoolClient) PublicationExists(ctx context.Context, name string) (bool, 
 }
 func (p *PoolClient) CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error {
 	return p.ic().CreateSubscription(ctx, name, connStr, pubName, slotName)
+}
+func (p *PoolClient) CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error {
+	return p.ic().CreateSubscriptionCreatingSlot(ctx, name, connStr, pubName)
+}
+func (p *PoolClient) DisableSubscription(ctx context.Context, name string) error {
+	return p.ic().DisableSubscription(ctx, name)
+}
+func (p *PoolClient) CountAppBackends(ctx context.Context) (int, error) {
+	return p.ic().CountAppBackends(ctx)
 }
 func (p *PoolClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	return p.ic().GetSubscriptionLag(ctx, name)

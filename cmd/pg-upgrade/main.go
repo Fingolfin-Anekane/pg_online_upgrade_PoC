@@ -115,7 +115,7 @@ func runCmd(cfgPath *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Drive the upgrade through phases 1-4 (Prepare → Upgrade)",
+		Short: "Drive the upgrade through phases 1-6 (Prepare → Switchover)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(*cfgPath)
 			if err != nil {
@@ -123,6 +123,18 @@ func runCmd(cfgPath *string) *cobra.Command {
 			}
 			if err := cfg.ValidateForRun(); err != nil {
 				return err
+			}
+			for _, c := range []struct{ name, dsn string }{
+				{"superuser_dsn", cfg.PG.SuperuserDSN},
+				{"pg17_dsn", cfg.Upgrade.PG17DSN},
+			} {
+				db, derr := connect.DatabaseOf(c.dsn)
+				if derr != nil {
+					return derr
+				}
+				if db != cfg.Upgrade.DBName {
+					return fmt.Errorf("config: %s database %q must match upgrade.dbname %q (the freeze, publication and subscription all act on the DSN's database)", c.name, db, cfg.Upgrade.DBName)
+				}
 			}
 			if statePath == "" {
 				statePath = "pg-upgrade-state.json"
@@ -157,14 +169,21 @@ func runCmd(cfgPath *string) *cobra.Command {
 			defer closePrimary()
 			patClient := patroni.NewHTTPClient("http://localhost:8008")
 
+			pg17Provider, closePG17 := newPG17Provider(cfg.Upgrade.PG17DSN)
+			defer closePG17()
+			newPat := patroni.NewHTTPClient(cfg.Upgrade.NewPatroniURL)
+
 			d := phases.Deps{
-				Cfg:     *cfg,
-				Mgr:     mgr,
-				Patroni: patClient,
-				Tools:   pgbin.Exec{NewBindir: cfg.Upgrade.NewPGBindir, OldBindir: cfg.Upgrade.OldPGBindir},
-				N1:      n1,
-				Primary: primaryProvider,
-				Drain:   slotdrain.Drain,
+				Cfg:         *cfg,
+				Mgr:         mgr,
+				Patroni:     patClient,
+				Tools:       pgbin.Exec{NewBindir: cfg.Upgrade.NewPGBindir, OldBindir: cfg.Upgrade.OldPGBindir},
+				N1:          n1,
+				Primary:     primaryProvider,
+				Drain:       slotdrain.Drain,
+				PG17:        pg17Provider,
+				NewPatroni:  newPat,
+				WriteSignal: func(path string, data []byte) error { return os.WriteFile(path, data, 0o644) },
 			}
 
 			mode := runner.Interactive
@@ -175,17 +194,39 @@ func runCmd(cfgPath *string) *cobra.Command {
 				cp = runner.InteractiveCheckpoint(os.Stdin, os.Stdout, runner.DefaultPrompts())
 			}
 
-			r := runner.New(phases.Phases1to4(d), mgr, mode, cp)
+			r := runner.New(phases.Phases1to6(d), mgr, mode, cp)
 			if err := r.Run(ctx); err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stdout, "\nReached point of no return (pg_upgrade complete). Phases 5-8 (Catchup→Cleanup) arrive in Plan 3.")
+			fmt.Fprintln(os.Stdout, "\nReached the rollback window (DSN swapped, reverse replication active). Phases 7-8 (Finalize/Cleanup) arrive in Plan 4.")
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&statePath, "state", "", "Path to state file (default pg-upgrade-state.json)")
 	cmd.Flags().BoolVar(&headless, "headless", false, "Skip operator checkpoints (full automation)")
 	return cmd
+}
+
+// newPG17Provider lazily connects to the upgraded PG17 on N1, plus a closer.
+func newPG17Provider(dsn string) (func(context.Context) (pgclient.Client, error), func()) {
+	var cached pgclient.Client
+	provider := func(ctx context.Context) (pgclient.Client, error) {
+		if cached != nil {
+			return cached, nil
+		}
+		c, err := pgclient.NewFromDSN(ctx, dsn)
+		if err != nil {
+			return nil, err
+		}
+		cached = c
+		return cached, nil
+	}
+	closeFn := func() {
+		if cached != nil {
+			cached.Close()
+		}
+	}
+	return provider, closeFn
 }
 
 // newPrimaryProvider returns a provider that builds (once) a PG client to the
