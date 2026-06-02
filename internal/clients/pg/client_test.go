@@ -133,13 +133,29 @@ func TestIsWALReceiverActive(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestIsWALReceiverActive_False(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	// empty pg_stat_wal_receiver => count(*) > 0 is false (N1 disconnected).
+	mock.ExpectQuery("FROM pg_stat_wal_receiver").
+		WillReturnRows(pgxmock.NewRows([]string{"active"}).AddRow(false))
+
+	c := pgclient.NewFromPool(mock)
+	active, err := c.IsWALReceiverActive(context.Background())
+	require.NoError(t, err)
+	assert.False(t, active)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestDisconnectFromWAL(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	defer mock.Close()
 
 	mock.ExpectExec("ALTER SYSTEM SET primary_conninfo").WillReturnResult(pgxmock.NewResult("ALTER", 0))
-	mock.ExpectExec("pg_reload_conf").WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("pg_reload_conf").WillReturnResult(pgxmock.NewResult("SELECT", 0))
 
 	c := pgclient.NewFromPool(mock)
 	require.NoError(t, c.DisconnectFromWAL(context.Background()))
