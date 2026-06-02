@@ -59,3 +59,26 @@ func TestIsolateTransitionsToDrain(t *testing.T) {
 	require.Len(t, tr, 1)
 	assert.Equal(t, "drain", tr[0].To)
 }
+
+func TestCaptureReceivedLSNEmptyErrors(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	n1 := &fakePG{receivedLSN: ""} // wal receiver already empty
+	step := &captureReceivedLSN{Deps{Mgr: mgr, N1: n1}}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wal receiver already empty")
+}
+
+func TestWaitReplayNotCaughtUp(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.SetReceivedLSN("0/3FA20000"))
+	n1 := &fakePG{replayLSN: "0/10"} // replay behind received
+	step := &waitReplayComplete{Deps{Mgr: mgr, N1: n1}}
+	done, err := step.Check(context.Background())
+	require.NoError(t, err)
+	assert.False(t, done)
+	err = step.Run(context.Background())
+	require.Error(t, err)
+}

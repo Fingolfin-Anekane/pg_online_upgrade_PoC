@@ -87,7 +87,7 @@ func (s *waitReplayComplete) Run(ctx context.Context) error {
 		return err
 	}
 	if !caught {
-		return fmt.Errorf("isolate: replay has not reached received_lsn yet (retry run)")
+		return fmt.Errorf("isolate: replay has not reached received_lsn yet; re-run pg-upgrade to retry")
 	}
 	return nil
 }
@@ -99,6 +99,9 @@ func (s *waitReplayComplete) replayCaughtUp(ctx context.Context) (bool, error) {
 	replayStr, err := s.d.N1.GetLastWALReplayLSN(ctx)
 	if err != nil {
 		return false, err
+	}
+	if replayStr == "" {
+		return false, fmt.Errorf("isolate: replay_lsn is NULL (N1 has not replayed any WAL)")
 	}
 	recv, err := pglogrepl.ParseLSN(received)
 	if err != nil {
@@ -123,6 +126,9 @@ func (s *recordTargetLSN) Run(ctx context.Context) error {
 	target, err := s.d.N1.GetLastWALReplayLSN(ctx)
 	if err != nil {
 		return err
+	}
+	if target == "" {
+		return fmt.Errorf("isolate: replay_lsn is NULL; cannot record target_lsn")
 	}
 	if err := s.d.Mgr.SetTargetLSN(target); err != nil {
 		return err
