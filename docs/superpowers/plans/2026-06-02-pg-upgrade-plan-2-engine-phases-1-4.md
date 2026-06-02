@@ -1616,28 +1616,27 @@ import (
 // add Checkpoint to fakePG (used by ShutdownN1Clean)
 func (f *fakePG) Checkpoint(context.Context) error { f.checkpoints++; return nil }
 
-// fakeTools implements pgbin.PGTools with scripted control-data states.
+// fakeTools implements pgbin.PGTools. OldControlData reports the pre-upgrade
+// cluster state; NewControlData reports the post-upgrade sysid.
 type fakeTools struct {
-	states   []string // ControlData state to return, popped in order
+	oldState string // State returned by OldControlData (pre-upgrade)
+	sysID    string // SystemID returned by NewControlData (post-upgrade)
 	promoted bool
 	stopped  bool
 	checked  bool
 	upgraded bool
-	sysID    string
 }
 
-func (f *fakeTools) ControlData(context.Context, string) (*pgbin.ControlData, error) {
-	st := "in production"
-	if len(f.states) > 0 {
-		st = f.states[0]
-		f.states = f.states[1:]
-	}
-	return &pgbin.ControlData{State: st, SystemID: f.sysID}, nil
+func (f *fakeTools) OldControlData(context.Context, string) (*pgbin.ControlData, error) {
+	return &pgbin.ControlData{State: f.oldState}, nil
 }
-func (f *fakeTools) Promote(context.Context, string) error                  { f.promoted = true; return nil }
-func (f *fakeTools) StopClean(context.Context, string) error                { f.stopped = true; return nil }
+func (f *fakeTools) NewControlData(context.Context, string) (*pgbin.ControlData, error) {
+	return &pgbin.ControlData{State: "in production", SystemID: f.sysID}, nil
+}
+func (f *fakeTools) Promote(context.Context, string) error                    { f.promoted = true; return nil }
+func (f *fakeTools) StopClean(context.Context, string) error                  { f.stopped = true; return nil }
 func (f *fakeTools) UpgradeCheck(context.Context, pgbin.UpgradeOptions) error { f.checked = true; return nil }
-func (f *fakeTools) Upgrade(context.Context, pgbin.UpgradeOptions) error    { f.upgraded = true; return nil }
+func (f *fakeTools) Upgrade(context.Context, pgbin.UpgradeOptions) error      { f.upgraded = true; return nil }
 
 func TestUpgradeHappyPath(t *testing.T) {
 	mgr := testMgr(t)
@@ -1648,9 +1647,8 @@ func TestUpgradeHappyPath(t *testing.T) {
 	cfgPath := filepath.Join(dir, "patroni.yml")
 	n1 := &fakePG{}
 	tools := &fakeTools{
-		// PromoteN1.Check -> "in production"; ShutdownN1Clean.Check -> "shut down"; RunPgUpgrade reads sysid
-		states: []string{"in production", "shut down"},
-		sysID:  "7361852939023499998",
+		oldState: "in production", // promoted/running, not yet shut down at check time
+		sysID:    "7361852939023499998",
 	}
 	d := Deps{
 		Cfg: config.Config{Upgrade: config.UpgradeConfig{
@@ -1753,7 +1751,7 @@ type shutdownN1Clean struct{ d Deps }
 
 func (s *shutdownN1Clean) ID() runner.StepID { return "ShutdownN1Clean" }
 func (s *shutdownN1Clean) Check(ctx context.Context) (bool, error) {
-	cd, err := s.d.Tools.ControlData(ctx, s.d.Cfg.Upgrade.DataDir)
+	cd, err := s.d.Tools.OldControlData(ctx, s.d.Cfg.Upgrade.DataDir)
 	if err != nil {
 		return false, err
 	}
@@ -1797,7 +1795,7 @@ func (s *runPgUpgrade) Run(ctx context.Context) error {
 	if err := s.d.Tools.Upgrade(ctx, s.d.upgradeOpts()); err != nil {
 		return err
 	}
-	cd, err := s.d.Tools.ControlData(ctx, s.d.Cfg.Upgrade.DataDir)
+	cd, err := s.d.Tools.NewControlData(ctx, s.d.Cfg.Upgrade.DataDir)
 	if err != nil {
 		return err
 	}
