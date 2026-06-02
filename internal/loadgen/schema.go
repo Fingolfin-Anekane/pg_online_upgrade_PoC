@@ -36,7 +36,7 @@ func InitSchema(ctx context.Context, db Pool, accounts int, balance int64, reset
 		return fmt.Errorf("init accounts: %w", err)
 	}
 	if reset {
-		if _, err := db.Exec(ctx, "TRUNCATE events, accounts"); err != nil {
+		if _, err := db.Exec(ctx, "TRUNCATE events, accounts RESTART IDENTITY"); err != nil {
 			return fmt.Errorf("init truncate: %w", err)
 		}
 	}

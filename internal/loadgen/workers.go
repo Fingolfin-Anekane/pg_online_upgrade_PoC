@@ -22,7 +22,7 @@ func appendOnce(ctx context.Context, db Pool, w *Writer, dsn, phase string, writ
 	}); err != nil {
 		// Could not durably record intent; do NOT issue the DB write, else a
 		// committed row would have no ground-truth entry. Abort the op.
-		return StatusFailed, ""
+		return StatusFailed, "log-write"
 	}
 	_, err := db.Exec(ctx, insertEventNoBatch, writerID, seq, payload)
 	status := classifyStatus(err)
@@ -73,7 +73,7 @@ func longTxnOnce(ctx context.Context, db Pool, w *Writer, dsn, phase string, wri
 		BatchID: batchID, DSN: dsn, Phase: phase,
 	}); err != nil {
 		// See appendOnce: abort if intent isn't durable.
-		return StatusFailed, ""
+		return StatusFailed, "log-write"
 	}
 	tx, err := db.Begin(ctx)
 	if err != nil {

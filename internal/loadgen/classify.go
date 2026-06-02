@@ -35,6 +35,9 @@ func errorClass(err error) string {
 		}
 		return "other"
 	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}

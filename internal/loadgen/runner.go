@@ -187,8 +187,8 @@ func Run(ctx context.Context, cfg loadcfg.Config, openPool func(ctx context.Cont
 				return
 			case s := <-sigCh:
 				if s == syscall.SIGHUP {
+					m.RecordSwitch(time.Now()) // mark switched before flipping the pool
 					sel.Switch()
-					m.RecordSwitch(time.Now())
 					fmt.Fprintln(os.Stdout, "== SIGHUP: switched DSN A -> B ==")
 				} else {
 					cancel()
