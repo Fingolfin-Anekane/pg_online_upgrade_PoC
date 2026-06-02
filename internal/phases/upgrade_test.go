@@ -79,7 +79,8 @@ func TestUpgradeHappyPath(t *testing.T) {
 
 	ph := NewUpgrade(d)
 	assert.Equal(t, "upgrade", ph.ID())
-	assert.Empty(t, ph.Transitions()) // terminal in Plan 2
+	require.Len(t, ph.Transitions(), 1)
+	assert.Equal(t, "catchup", ph.Transitions()[0].To)
 
 	for _, s := range ph.Steps() {
 		done, err := s.Check(context.Background())

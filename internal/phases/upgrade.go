@@ -24,7 +24,7 @@ func NewUpgrade(d Deps) runner.Phase {
 			&runPgUpgrade{d},
 			&writeFinalPatroniConfig{d},
 		},
-		trans: nil, // terminal: point of no return reached
+		trans: []runner.Transition{{To: "catchup"}},
 	}
 }
 
