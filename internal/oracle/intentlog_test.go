@@ -37,3 +37,19 @@ func TestReadLogPairsRecords(t *testing.T) {
 	assert.Equal(t, int64(2), byID["o2"].Rows)
 	assert.Equal(t, "indoubt", byID["o3"].Status) // attempt with no result
 }
+
+func TestReadLogIgnoresResultWithoutAttempt(t *testing.T) {
+	path := writeLog(t, `{"op_id":"x","status":"acked","ts":"2026-06-02T00:00:00Z"}
+`)
+	ops, err := ReadLog(path)
+	require.NoError(t, err)
+	assert.Empty(t, ops) // a result with no preceding attempt is ignored
+}
+
+func TestReadLogMalformedLineErrors(t *testing.T) {
+	path := writeLog(t, `{"op_id":"x","status":"attempt","rows":1}
+{"broken json
+`)
+	_, err := ReadLog(path)
+	require.Error(t, err) // a corrupt line fails the whole read (authoritative oracle)
+}

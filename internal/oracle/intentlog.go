@@ -10,6 +10,13 @@ import (
 	"os"
 )
 
+// Status strings shared with the loadgen intent-log writer. They MUST match
+// loadgen's Status* constants; a skew would silently misclassify operations.
+const (
+	statusAttempt = "attempt"
+	statusIndoubt = "indoubt"
+)
+
 // Op is a resolved operation: attempt identity + terminal status.
 type Op struct {
 	OpID      string
@@ -49,14 +56,16 @@ func ReadLog(path string) ([]Op, error) {
 		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 			return nil, fmt.Errorf("oracle parse line: %w", err)
 		}
-		if r.Status == "attempt" {
+		if r.Status == statusAttempt {
 			if _, ok := ops[r.OpID]; !ok {
 				order = append(order, r.OpID)
 			}
+			// Overwrite is safe: writers mint a fresh uuid op_id per operation,
+			// so the same op_id never has two attempt records.
 			ops[r.OpID] = &Op{
 				OpID: r.OpID, Kind: r.Kind, WriterID: r.WriterID,
-				ClientSeq: r.ClientSeq, Rows: max64(r.Rows, 1), BatchID: r.BatchID,
-				Status: "indoubt", // until a result arrives
+				ClientSeq: r.ClientSeq, Rows: max(r.Rows, 1), BatchID: r.BatchID,
+				Status: statusIndoubt, // until a result arrives
 			}
 			continue
 		}
@@ -73,11 +82,4 @@ func ReadLog(path string) ([]Op, error) {
 		out = append(out, *ops[id])
 	}
 	return out, nil
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
