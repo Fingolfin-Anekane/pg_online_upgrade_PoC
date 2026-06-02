@@ -40,9 +40,8 @@ func copyFile(src, dst string, perm os.FileMode) error {
 		return fmt.Errorf("archive: open %s: %w", src, err)
 	}
 	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("archive: mkdir for %s: %w", dst, err)
-	}
+	// filepath.Walk visits top-down, so the parent directory has already been
+	// created by copyTree's dir branch before any file under it is copied.
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return fmt.Errorf("archive: create %s: %w", dst, err)
@@ -50,6 +49,12 @@ func copyFile(src, dst string, perm os.FileMode) error {
 	defer out.Close()
 	if _, err := io.Copy(out, in); err != nil {
 		return fmt.Errorf("archive: copy %s -> %s: %w", src, dst, err)
+	}
+	// Close explicitly to surface flush errors (EIO/ENOSPC) — a silently
+	// truncated archive is worse than a hard failure. The deferred Close is then
+	// a harmless no-op double-close.
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("archive: close %s: %w", dst, err)
 	}
 	return nil
 }

@@ -24,6 +24,11 @@ func TestCopyTree(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(dst, "sub", "b.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "world", string(b))
+
+	// permissions are preserved
+	st, err := os.Stat(filepath.Join(dst, "sub", "b.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), st.Mode().Perm())
 }
 
 func TestCopyTreeMissingSource(t *testing.T) {
