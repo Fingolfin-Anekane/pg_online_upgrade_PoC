@@ -1495,9 +1495,11 @@ type PoolClient struct {
 }
 
 // poolQuerier is the subset of pgxpool.Pool that internalClient needs.
+// Exec returns pgconn.CommandTag (pgx v5's package path for CommandTag), so
+// client.go must also import "github.com/jackc/pgx/v5/pgconn".
 type poolQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Exec(ctx context.Context, sql string, args ...any) (pgx.CommandTag, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 // internalClient implements most Client methods using a poolQuerier.
@@ -1763,8 +1765,11 @@ func (p *PoolClient) GetAllSequences(ctx context.Context) ([]SequenceInfo, error
 
 func (p *PoolClient) Close() { p.pool.Close() }
 
+// quoteString renders s as a SQL string literal, doubling embedded single
+// quotes so a value such as a DSN password containing a quote cannot break out
+// of the literal or inject SQL. Requires importing "strings".
 func quoteString(s string) string {
-	return "'" + s + "'"
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 ```
 
@@ -2001,14 +2006,19 @@ func handleXLogData(
 		return nil
 	}
 
-	msgType := pglogrepl.MessageType(xld.WALData[0])
-	if msgType != pglogrepl.MessageTypeCommit {
+	// Parse the logical replication message (pass the FULL WALData; Parse reads
+	// the type byte itself). We only care about Commit messages — transaction
+	// boundaries; everything else is skipped. Parse errors for message types we
+	// don't decode are non-fatal. NOTE: the installed pglogrepl exposes
+	// Parse() returning a Message interface — there is no ParseCommitMessage.
+	logicalMsg, err := pglogrepl.Parse(xld.WALData)
+	if err != nil {
 		return nil
 	}
 
-	commitMsg, err := pglogrepl.ParseCommitMessage(xld.WALData[1:])
-	if err != nil {
-		return fmt.Errorf("parse commit: %w", err)
+	commitMsg, ok := logicalMsg.(*pglogrepl.CommitMessage)
+	if !ok {
+		return nil
 	}
 
 	if commitMsg.CommitLSN <= targetLSN {
