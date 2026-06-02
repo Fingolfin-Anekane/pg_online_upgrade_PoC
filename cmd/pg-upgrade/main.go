@@ -115,7 +115,7 @@ func runCmd(cfgPath *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Drive the upgrade through phases 1-6 (Prepare → Switchover)",
+		Short: "Drive the upgrade through phases 1-8 (Prepare → Cleanup)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(*cfgPath)
 			if err != nil {
@@ -194,11 +194,11 @@ func runCmd(cfgPath *string) *cobra.Command {
 				cp = runner.InteractiveCheckpoint(os.Stdin, os.Stdout, runner.DefaultPrompts())
 			}
 
-			r := runner.New(phases.Phases1to6(d), mgr, mode, cp)
+			r := runner.New(phases.Phases1to8(d), mgr, mode, cp)
 			if err := r.Run(ctx); err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stdout, "\nReached the rollback window (DSN swapped, reverse replication active). Phases 7-8 (Finalize/Cleanup) arrive in Plan 4.")
+			fmt.Fprintln(os.Stdout, "\nUpgrade complete (all 8 phases). Operator follow-up: remove stale DCS keys for the old cluster (e.g. etcdctl del /service/<old-scope>/ --prefix).")
 			return nil
 		},
 	}

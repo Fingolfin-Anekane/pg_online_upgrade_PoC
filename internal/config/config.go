@@ -31,6 +31,8 @@ type UpgradeConfig struct {
 	NewPatroniURL     string `yaml:"new_patroni_url"`
 	DSNSwapSignalPath string `yaml:"dsn_swap_signal_path"`
 	SequenceBuffer    int64  `yaml:"sequence_buffer"`
+	PgUpgradeLogDir   string `yaml:"pg_upgrade_log_dir"`
+	LogArchiveDir     string `yaml:"log_archive_dir"`
 }
 
 type PGConfig struct {
@@ -91,6 +93,12 @@ func (c *Config) ValidateForRun() error {
 	}
 	if u.ReverseSubName == "" {
 		missing = append(missing, "reverse_sub_name")
+	}
+	if u.PgUpgradeLogDir == "" {
+		missing = append(missing, "pg_upgrade_log_dir")
+	}
+	if u.LogArchiveDir == "" {
+		missing = append(missing, "log_archive_dir")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: run requires upgrade fields: %s", strings.Join(missing, ", "))

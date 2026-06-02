@@ -9,14 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPhases1to6Registry(t *testing.T) {
-	ps := Phases1to6(Deps{})
-	require.Len(t, ps, 6)
+func TestPhases1to8Registry(t *testing.T) {
+	ps := Phases1to8(Deps{})
+	require.Len(t, ps, 8)
 	ids := []string{}
 	for _, p := range ps {
 		ids = append(ids, p.ID())
 	}
-	assert.Equal(t, []string{"prepare", "isolate", "drain", "upgrade", "catchup", "switchover"}, ids)
+	assert.Equal(t, []string{"prepare", "isolate", "drain", "upgrade", "catchup", "switchover", "finalize", "cleanup"}, ids)
 }
 
 func TestFirstPhaseMatchesManagerDefault(t *testing.T) {

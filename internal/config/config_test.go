@@ -69,6 +69,7 @@ func TestValidateForRun(t *testing.T) {
 		SubscriptionName: "sub_upgrade", ReversePubName: "pub_rb", ReverseSubName: "sub_rb",
 		DBName: "app", PG17DSN: "host=localhost port=5433", NewPatroniURL: "http://localhost:8009",
 		DSNSwapSignalPath: "/run/sig.json", SequenceBuffer: 1000,
+		PgUpgradeLogDir: "/data/pg_upgrade_output.d", LogArchiveDir: "/var/log/pg-upgrade",
 	}}
 	require.NoError(t, cfg.ValidateForRun())
 
@@ -80,6 +81,7 @@ func TestValidateForRun(t *testing.T) {
 		SubscriptionName: "sub_upgrade", ReversePubName: "pub_rb", ReverseSubName: "sub_rb",
 		DBName: "app", PG17DSN: "host=localhost port=5433", NewPatroniURL: "http://localhost:8009",
 		DSNSwapSignalPath: "/run/sig.json", SequenceBuffer: 1000,
+		PgUpgradeLogDir: "/data/pg_upgrade_output.d", LogArchiveDir: "/var/log/pg-upgrade",
 	}}
 	assert.ErrorContains(t, cfg2.ValidateForRun(), "new_data_dir must differ")
 }
