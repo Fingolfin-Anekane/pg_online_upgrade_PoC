@@ -34,6 +34,7 @@ type PGTools interface {
 	NewControlData(ctx context.Context, dataDir string) (*ControlData, error)
 	Promote(ctx context.Context, dataDir string) error
 	StopClean(ctx context.Context, dataDir string) error
+	Restart(ctx context.Context, dataDir string) error
 	UpgradeCheck(ctx context.Context, o UpgradeOptions) error
 	Upgrade(ctx context.Context, o UpgradeOptions) error
 }
@@ -65,11 +66,17 @@ func (e Exec) controlData(ctx context.Context, bindir, dataDir string) (*Control
 }
 
 func (e Exec) Promote(ctx context.Context, dataDir string) error {
-	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "promote", "-D", dataDir), "promote")
+	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "promote", "-w", "-D", dataDir), "promote")
 }
 
 func (e Exec) StopClean(ctx context.Context, dataDir string) error {
-	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "stop", "-m", "smart", "-D", dataDir), "stop")
+	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "stop", "-m", "fast", "-D", dataDir), "stop")
+}
+
+// Restart stops (fast) and starts the cluster, waiting for readiness. Used to
+// apply a primary_conninfo change on PG < 13 where it is not reloadable.
+func (e Exec) Restart(ctx context.Context, dataDir string) error {
+	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "restart", "-m", "fast", "-w", "-D", dataDir), "restart")
 }
 
 func (e Exec) UpgradeCheck(ctx context.Context, o UpgradeOptions) error {

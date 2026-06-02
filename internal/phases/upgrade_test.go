@@ -18,12 +18,13 @@ func (f *fakePG) Checkpoint(context.Context) error { f.checkpoints++; return nil
 // fakeTools implements pgbin.PGTools. OldControlData reports the pre-upgrade
 // cluster state; NewControlData reports the post-upgrade sysid.
 type fakeTools struct {
-	oldState string // State returned by OldControlData (pre-upgrade)
-	sysID    string // SystemID returned by NewControlData (post-upgrade)
-	promoted bool
-	stopped  bool
-	checked  bool
-	upgraded bool
+	oldState  string // State returned by OldControlData (pre-upgrade)
+	sysID     string // SystemID returned by NewControlData (post-upgrade)
+	promoted  bool
+	stopped   bool
+	checked   bool
+	upgraded  bool
+	restarted bool
 }
 
 func (f *fakeTools) OldControlData(context.Context, string) (*pgbin.ControlData, error) {
@@ -42,6 +43,7 @@ func (f *fakeTools) Upgrade(context.Context, pgbin.UpgradeOptions) error {
 	f.upgraded = true
 	return nil
 }
+func (f *fakeTools) Restart(context.Context, string) error { f.restarted = true; return nil }
 
 func TestUpgradeHappyPath(t *testing.T) {
 	mgr := testMgr(t)
