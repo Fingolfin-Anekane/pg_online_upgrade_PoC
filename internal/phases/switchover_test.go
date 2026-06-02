@@ -41,6 +41,12 @@ func switchoverDeps(t *testing.T, pg17, oldPrimary *fakePG) Deps {
 	}
 }
 
+func TestSwitchoverTransitionsToFinalize(t *testing.T) {
+	tr := NewSwitchover(Deps{}).Transitions()
+	require.Len(t, tr, 1)
+	assert.Equal(t, "finalize", tr[0].To)
+}
+
 func TestSwitchoverFreezeAndSyncSequences(t *testing.T) {
 	pg17 := &fakePG{subLag: &pg.SubscriptionLag{}} // subscription exists, zero lag
 	oldPrimary := &fakePG{sequences: []pg.SequenceInfo{{Schema: "public", Name: "s1", LastValue: 42}}}

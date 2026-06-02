@@ -39,5 +39,7 @@ func DefaultPrompts() PhasePrompts {
 		"upgrade":    "pg_upgrade complete. Proceed to catchup (start of Phase 5)?",
 		"catchup":    "New cluster healthy, subscription at zero lag. Begin switchover (write freeze)?",
 		"switchover": "DSN swapped, rollback window open. Proceed to Finalize (Plan 4 — no rollback after this)?",
+		"finalize":   "Rollback artifacts dropped, cluster renamed. Proceed to cleanup (decommission old cluster)?",
+		"cleanup":    "Cleanup complete.",
 	}
 }

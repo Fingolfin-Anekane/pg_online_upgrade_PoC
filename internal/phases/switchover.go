@@ -9,8 +9,8 @@ import (
 
 // NewSwitchover builds Phase 6: the critical section. Freeze the old primary,
 // drain the final lag, sync sequences, set up reverse replication, signal the
-// DSN swap, verify traffic moved, and disable the forward subscription. Terminal
-// in Plan 3 (the run pauses at the rollback window; Plan 4 adds Finalize).
+// DSN swap, verify traffic moved, and disable the forward subscription.
+// Transitions to "finalize" (Plan 4).
 func NewSwitchover(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "switchover",
@@ -23,7 +23,7 @@ func NewSwitchover(d Deps) runner.Phase {
 			&verifyTrafficOnNew{d},
 			&disableForwardSubscription{d},
 		},
-		trans: nil, // terminal in Plan 3: paused at the rollback window
+		trans: []runner.Transition{{To: "finalize"}},
 	}
 }
 
