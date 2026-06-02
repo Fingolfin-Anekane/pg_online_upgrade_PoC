@@ -28,7 +28,10 @@ type UpgradeOptions struct {
 // PGTools is the seam the upgrade steps depend on, so their idempotency checks
 // (which read pg_controldata) are unit-testable with a fake.
 type PGTools interface {
-	ControlData(ctx context.Context, dataDir string) (*ControlData, error)
+	// OldControlData reads pg_controldata using OldBindir's binary (the
+	// pre-upgrade PG10 cluster); NewControlData uses NewBindir (post-upgrade PG17).
+	OldControlData(ctx context.Context, dataDir string) (*ControlData, error)
+	NewControlData(ctx context.Context, dataDir string) (*ControlData, error)
 	Promote(ctx context.Context, dataDir string) error
 	StopClean(ctx context.Context, dataDir string) error
 	UpgradeCheck(ctx context.Context, o UpgradeOptions) error
@@ -43,8 +46,18 @@ type Exec struct {
 
 func (e Exec) bin(dir, name string) string { return filepath.Join(dir, name) }
 
-func (e Exec) ControlData(ctx context.Context, dataDir string) (*ControlData, error) {
-	out, err := exec.CommandContext(ctx, e.bin(e.NewBindir, "pg_controldata"), "-D", dataDir).Output()
+// OldControlData reads pg_controldata with the OLD bindir (pre-upgrade cluster).
+func (e Exec) OldControlData(ctx context.Context, dataDir string) (*ControlData, error) {
+	return e.controlData(ctx, e.OldBindir, dataDir)
+}
+
+// NewControlData reads pg_controldata with the NEW bindir (post-upgrade cluster).
+func (e Exec) NewControlData(ctx context.Context, dataDir string) (*ControlData, error) {
+	return e.controlData(ctx, e.NewBindir, dataDir)
+}
+
+func (e Exec) controlData(ctx context.Context, bindir, dataDir string) (*ControlData, error) {
+	out, err := exec.CommandContext(ctx, e.bin(bindir, "pg_controldata"), "-D", dataDir).Output()
 	if err != nil {
 		return nil, fmt.Errorf("pgbin: pg_controldata: %w", err)
 	}

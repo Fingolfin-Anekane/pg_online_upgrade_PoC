@@ -30,3 +30,9 @@ func TestParseControlDataMissingFields(t *testing.T) {
 	assert.Equal(t, "", cd.State)
 	assert.Equal(t, "", cd.SystemID)
 }
+
+func TestParseControlDataCRLF(t *testing.T) {
+	cd := parseControlData("Database cluster state:               in production\r\nDatabase system identifier:           42\r\n")
+	assert.Equal(t, "in production", cd.State)
+	assert.Equal(t, "42", cd.SystemID)
+}
