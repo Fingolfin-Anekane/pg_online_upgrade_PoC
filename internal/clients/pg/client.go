@@ -17,6 +17,8 @@ type Client interface {
 	IsInRecovery(ctx context.Context) (bool, error)
 	GetLastWALReplayLSN(ctx context.Context) (string, error)
 	GetWALReceiverReceivedLSN(ctx context.Context) (string, error)
+	IsWALReceiverActive(ctx context.Context) (bool, error)
+	DisconnectFromWAL(ctx context.Context) error
 	Checkpoint(ctx context.Context) error
 	GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error)
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
@@ -104,6 +106,29 @@ func (c *internalClient) GetWALReceiverReceivedLSN(ctx context.Context) (string,
 		return "", err
 	}
 	return *lsn, nil
+}
+
+// IsWALReceiverActive reports whether N1 is still streaming WAL from a primary.
+// pg_stat_wal_receiver has one row while a walreceiver is connected, none after.
+func (c *internalClient) IsWALReceiverActive(ctx context.Context) (bool, error) {
+	var active bool
+	err := c.q.QueryRow(ctx, `SELECT count(*) > 0 AS active FROM pg_stat_wal_receiver`).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("pg: query wal_receiver: %w", err)
+	}
+	return active, nil
+}
+
+// DisconnectFromWAL clears primary_conninfo and reloads, so N1 stops receiving
+// WAL. Patroni must be paused first or it will revert this.
+func (c *internalClient) DisconnectFromWAL(ctx context.Context) error {
+	if _, err := c.q.Exec(ctx, `ALTER SYSTEM SET primary_conninfo = ''`); err != nil {
+		return fmt.Errorf("pg: clear primary_conninfo: %w", err)
+	}
+	if _, err := c.q.Exec(ctx, `SELECT pg_reload_conf()`); err != nil {
+		return fmt.Errorf("pg: reload conf: %w", err)
+	}
+	return nil
 }
 
 func (c *internalClient) Checkpoint(ctx context.Context) error {
@@ -268,6 +293,12 @@ func (p *PoolClient) GetLastWALReplayLSN(ctx context.Context) (string, error) {
 }
 func (p *PoolClient) GetWALReceiverReceivedLSN(ctx context.Context) (string, error) {
 	return p.ic().GetWALReceiverReceivedLSN(ctx)
+}
+func (p *PoolClient) IsWALReceiverActive(ctx context.Context) (bool, error) {
+	return p.ic().IsWALReceiverActive(ctx)
+}
+func (p *PoolClient) DisconnectFromWAL(ctx context.Context) error {
+	return p.ic().DisconnectFromWAL(ctx)
 }
 func (p *PoolClient) Checkpoint(ctx context.Context) error { return p.ic().Checkpoint(ctx) }
 func (p *PoolClient) GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error) {
