@@ -7,17 +7,23 @@ import (
 	"github.com/google/uuid"
 )
 
-const insertEvent = `INSERT INTO events (writer_id, client_seq, batch_id, payload) VALUES ($1, $2, $3, $4)`
-const insertEventNoBatch = `INSERT INTO events (writer_id, client_seq, payload) VALUES ($1, $2, $3)`
+const (
+	insertEvent        = `INSERT INTO events (writer_id, client_seq, batch_id, payload) VALUES ($1, $2, $3, $4)`
+	insertEventNoBatch = `INSERT INTO events (writer_id, client_seq, payload) VALUES ($1, $2, $3)`
+)
 
 // appendOnce inserts one event row in autocommit and logs the op. Returns the
 // resolved status and the error class ("" when acked) for live metrics.
 func appendOnce(ctx context.Context, db Pool, w *Writer, dsn, phase string, writerID int, seq int64, payload string) (string, string) {
 	opID := uuid.NewString()
-	_ = w.WriteAttempt(Record{
+	if err := w.WriteAttempt(Record{
 		OpID: opID, Kind: "append", WriterID: writerID, ClientSeq: seq, Rows: 1,
 		DSN: dsn, Phase: phase,
-	})
+	}); err != nil {
+		// Could not durably record intent; do NOT issue the DB write, else a
+		// committed row would have no ground-truth entry. Abort the op.
+		return StatusFailed, ""
+	}
 	_, err := db.Exec(ctx, insertEventNoBatch, writerID, seq, payload)
 	status := classifyStatus(err)
 	_ = w.WriteResult(opID, status, errMsg(err))
@@ -31,6 +37,8 @@ func rywOnce(ctx context.Context, db Pool, w *Writer, dsn, phase string, writerI
 	status, class := appendOnce(ctx, db, w, dsn, phase, writerID, seq, "ryw")
 	var maxSeq int64 = -1
 	_ = db.QueryRow(ctx, `SELECT coalesce(max(client_seq), -1) FROM events WHERE writer_id = $1`, writerID).Scan(&maxSeq)
+	// maxSeq is for the caller to stream as a live observation; it is NOT used
+	// in reconciliation (observation only — a stale read is lag, not a verdict).
 	return status, class, maxSeq
 }
 
@@ -60,10 +68,13 @@ func transferOnce(ctx context.Context, db Pool, from, to, amount int) (string, s
 func longTxnOnce(ctx context.Context, db Pool, w *Writer, dsn, phase string, writerID int, startSeq, rows int64, hold time.Duration) (string, string) {
 	opID := uuid.NewString()
 	batchID := uuid.NewString()
-	_ = w.WriteAttempt(Record{
+	if err := w.WriteAttempt(Record{
 		OpID: opID, Kind: "long-txn", WriterID: writerID, ClientSeq: startSeq, Rows: rows,
 		BatchID: batchID, DSN: dsn, Phase: phase,
-	})
+	}); err != nil {
+		// See appendOnce: abort if intent isn't durable.
+		return StatusFailed, ""
+	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		status := classifyStatus(err)
@@ -78,10 +89,15 @@ func longTxnOnce(ctx context.Context, db Pool, w *Writer, dsn, phase string, wri
 		}
 	}
 	if hold > 0 {
+		timer := time.NewTimer(hold)
 		select {
-		case <-time.After(hold):
+		case <-timer.C:
 		case <-ctx.Done():
+			// Harness is shutting down; fall through to Commit so the in-flight
+			// long txn is logged as indoubt (outcome unknown) rather than failed.
+			// pgx discards the unclean connection.
 		}
+		timer.Stop()
 	}
 	commitErr := tx.Commit(ctx)
 	status := classifyStatus(commitErr)

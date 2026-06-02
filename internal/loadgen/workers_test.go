@@ -3,6 +3,7 @@ package loadgen
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -85,4 +86,33 @@ func TestLongTxnOnceInsertsBatch(t *testing.T) {
 	status, _ := longTxnOnce(context.Background(), mock, w, "a", "pre-switch", 3, 200, 2, 0)
 	assert.Equal(t, StatusAcked, status)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRYWOnceReadsBackMaxSeq(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectExec("INSERT INTO events").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery(`SELECT coalesce\(max\(client_seq\)`).WithArgs(7).
+		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow(int64(100)))
+
+	w := newTestWriter(t)
+	status, class, maxSeq := rywOnce(context.Background(), mock, w, "a", "pre-switch", 7, 100)
+	assert.Equal(t, StatusAcked, status)
+	assert.Empty(t, class)
+	assert.Equal(t, int64(100), maxSeq)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAppendOnceIndoubtOnNetworkError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectExec("INSERT INTO events").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnError(errors.New("write: connection reset by peer"))
+
+	w := newTestWriter(t)
+	status, _ := appendOnce(context.Background(), mock, w, "a", "pre-switch", 7, 100, "x")
+	assert.Equal(t, StatusIndoubt, status)
 }
