@@ -31,6 +31,9 @@ type fakePG struct {
 	conninfoCleared bool
 	subLag          *pg.SubscriptionLag
 	createdSub      string
+	frozen          string
+	sequences       []pg.SequenceInfo
+	setSeqs         []seqSet
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
@@ -155,4 +158,10 @@ func TestPrepareRejectsBelowPG10(t *testing.T) {
 	err := (&verifyPrerequisites{d}).Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PostgreSQL 10")
+}
+
+type seqSet struct {
+	schema string
+	name   string
+	value  int64
 }
