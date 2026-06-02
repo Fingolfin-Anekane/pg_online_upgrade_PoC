@@ -178,15 +178,22 @@ func Run(ctx context.Context, cfg loadcfg.Config, openPool func(ctx context.Cont
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+	sigDone := make(chan struct{})
+	defer close(sigDone) // stop the signal goroutine when Run returns
 	go func() {
-		for s := range sigCh {
-			if s == syscall.SIGHUP {
-				sel.Switch()
-				m.RecordSwitch(time.Now())
-				fmt.Fprintln(os.Stdout, "== SIGHUP: switched DSN A -> B ==")
-			} else {
-				cancel()
+		for {
+			select {
+			case <-sigDone:
 				return
+			case s := <-sigCh:
+				if s == syscall.SIGHUP {
+					sel.Switch()
+					m.RecordSwitch(time.Now())
+					fmt.Fprintln(os.Stdout, "== SIGHUP: switched DSN A -> B ==")
+				} else {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
@@ -197,6 +204,10 @@ func Run(ctx context.Context, cfg loadcfg.Config, openPool func(ctx context.Cont
 	var wg sync.WaitGroup
 	start := func(fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
 
+	// writerID ranges are disjoint so the unique (writer_id, client_seq)
+	// constraint never collides across workers: append [1000,2000),
+	// ryw [2000,3000), long-txn [3000,4000). Supports up to 999 workers per
+	// type; higher counts are not prevented.
 	for i := 0; i < cfg.Workers.Append.Count; i++ {
 		id := 1000 + i
 		start(func() { appendLoop(runCtx, sel, w, m, id, cfg.Workers.Append.Rate) })
