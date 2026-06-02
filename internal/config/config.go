@@ -20,6 +20,7 @@ type UpgradeConfig struct {
 	NewPGBindir       string `yaml:"new_pg_bindir"`
 	OldPGBindir       string `yaml:"old_pg_bindir"`
 	DataDir           string `yaml:"data_dir"`
+	NewDataDir        string `yaml:"new_data_dir"`
 	PatroniConfigPath string `yaml:"patroni_config_path"`
 }
 

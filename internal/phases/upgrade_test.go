@@ -58,6 +58,7 @@ func TestUpgradeHappyPath(t *testing.T) {
 	d := Deps{
 		Cfg: config.Config{Upgrade: config.UpgradeConfig{
 			NewPGBindir: "/n", OldPGBindir: "/o", DataDir: filepath.Join(dir, "data"),
+			NewDataDir:        filepath.Join(dir, "newdata"),
 			PatroniConfigPath: cfgPath,
 		}},
 		Mgr: mgr, N1: n1, Tools: tools,
@@ -78,10 +79,52 @@ func TestUpgradeHappyPath(t *testing.T) {
 	assert.True(t, tools.stopped)
 	assert.True(t, tools.checked)
 	assert.True(t, tools.upgraded)
+	assert.Equal(t, 2, n1.checkpoints)
 	assert.True(t, mgr.Get().Artifacts.PgUpgradeDone)
 	assert.Equal(t, "7361852939023499998", mgr.Get().Artifacts.PG17SYSID)
 
 	data, err := os.ReadFile(cfgPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "7361852939023499998")
+}
+
+func TestUpgradeRejectsSameDataDirs(t *testing.T) {
+	mgr := testMgr(t)
+	for _, p := range []string{"isolate", "drain", "upgrade"} {
+		require.NoError(t, mgr.Advance(p))
+	}
+	d := Deps{
+		Cfg: config.Config{Upgrade: config.UpgradeConfig{DataDir: "/same", NewDataDir: "/same"}},
+		Mgr: mgr, Tools: &fakeTools{},
+	}
+	step := &runPgUpgradeCheck{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "distinct")
+}
+
+func TestUpgradeErrorsOnEmptySysID(t *testing.T) {
+	mgr := testMgr(t)
+	for _, p := range []string{"isolate", "drain", "upgrade"} {
+		require.NoError(t, mgr.Advance(p))
+	}
+	d := Deps{
+		Cfg: config.Config{Upgrade: config.UpgradeConfig{DataDir: "/old", NewDataDir: "/new"}},
+		Mgr: mgr, Tools: &fakeTools{sysID: ""}, // NewControlData returns empty sysid
+	}
+	step := &runPgUpgrade{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "system identifier")
+}
+
+func TestUpgradeSkipsPromoteWhenAlreadyPrimary(t *testing.T) {
+	n1 := &fakePG{inRecovery: false} // already promoted
+	tools := &fakeTools{}
+	d := Deps{Mgr: testMgr(t), N1: n1, Tools: tools}
+	step := &promoteN1{d}
+	done, err := step.Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done) // skip promote
+	assert.False(t, tools.promoted)
 }
