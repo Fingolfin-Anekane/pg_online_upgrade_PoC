@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
@@ -148,10 +149,11 @@ func TestPromoteConfirmsOutOfRecovery(t *testing.T) {
 }
 
 func TestPromoteErrorsIfStillInRecovery(t *testing.T) {
-	n1 := &fakePG{inRecovery: true} // promote does not exit recovery
+	n1 := &fakePG{inRecovery: true} // never leaves recovery
 	tools := &fakeTools{}           // no onPromote -> stays in recovery
 	d := Deps{Mgr: testMgr(t), N1: n1, Tools: tools, Cfg: config.Config{Upgrade: config.UpgradeConfig{DataDir: "/d"}}}
-	err := (&promoteN1{d}).Run(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "still in recovery")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := (&promoteN1{d}).Run(ctx)
+	require.Error(t, err) // poll never sees out-of-recovery; ctx deadline ends it
 }

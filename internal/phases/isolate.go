@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
@@ -114,13 +115,17 @@ func removePrimaryConninfoFromRecoveryConf(dataDir string) error {
 	return nil
 }
 
+// matches an active "primary_conninfo = ..." (or "primary_conninfo=...") line,
+// with optional leading whitespace; does NOT match comments or other keys.
+var primaryConninfoLineRe = regexp.MustCompile(`^\s*primary_conninfo\s*=`)
+
 // stripPrimaryConninfo removes active primary_conninfo lines from a recovery.conf
 // body, preserving comments and all other settings.
 func stripPrimaryConninfo(content string) string {
 	lines := strings.Split(content, "\n")
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "primary_conninfo") {
+		if primaryConninfoLineRe.MatchString(line) {
 			continue
 		}
 		kept = append(kept, line)

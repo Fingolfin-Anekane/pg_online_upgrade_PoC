@@ -131,4 +131,9 @@ func TestStripPrimaryConninfo(t *testing.T) {
 	assert.Contains(t, out, "standby_mode")
 	assert.Contains(t, out, "#primary_conninfo") // commented line preserved
 	assert.Contains(t, out, "restore_command")
+
+	// a different key that merely shares the prefix must be preserved
+	out2 := stripPrimaryConninfo("primary_conninfo_extra = 'keep me'\nprimary_conninfo = 'drop'\n")
+	assert.Contains(t, out2, "primary_conninfo_extra = 'keep me'")
+	assert.NotContains(t, out2, "primary_conninfo = 'drop'")
 }

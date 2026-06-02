@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
+	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 )
@@ -62,16 +64,30 @@ func (s *promoteN1) Run(ctx context.Context) error {
 	if err := s.d.Tools.Promote(ctx, s.d.Cfg.Upgrade.DataDir); err != nil {
 		return err
 	}
-	// pg_ctl promote -w should have waited; confirm with the authoritative
-	// signal. If still in recovery, a re-run self-heals (Check skips once promoted).
-	inRec, err := s.d.N1.IsInRecovery(ctx)
-	if err != nil {
-		return err
+	// pg_ctl promote -w waits on PG12+, but the -w flag is ignored for promote on
+	// PG10/11 (it returns immediately). Poll the authoritative signal until N1
+	// leaves recovery so a single run works across all supported versions.
+	return waitOutOfRecovery(ctx, s.d.N1, 60, time.Second)
+}
+
+// waitOutOfRecovery polls IsInRecovery until it reports false, up to `attempts`
+// times spaced by `interval`. It checks immediately before the first wait.
+func waitOutOfRecovery(ctx context.Context, n1 pg.Client, attempts int, interval time.Duration) error {
+	for i := 0; i < attempts; i++ {
+		inRec, err := n1.IsInRecovery(ctx)
+		if err != nil {
+			return err
+		}
+		if !inRec {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
 	}
-	if inRec {
-		return fmt.Errorf("upgrade: promote not complete (still in recovery); re-run pg-upgrade")
-	}
-	return nil
+	return fmt.Errorf("upgrade: promote did not complete within %s (still in recovery)", time.Duration(attempts)*interval)
 }
 
 // --- ShutdownN1Clean ---

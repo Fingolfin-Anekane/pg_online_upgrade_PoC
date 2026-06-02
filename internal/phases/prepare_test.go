@@ -144,3 +144,13 @@ func TestPrepareRejectsNonReplicaN1(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in recovery")
 }
+
+func TestPrepareRejectsBelowPG10(t *testing.T) {
+	primary := &fakePG{walLevel: "logical"}
+	n1 := &fakePG{inRecovery: true, serverVersion: 90605} // PG 9.6
+	d := Deps{Mgr: testMgr(t), N1: n1,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	err := (&verifyPrerequisites{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PostgreSQL 10")
+}
