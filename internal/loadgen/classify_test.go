@@ -3,6 +3,7 @@ package loadgen
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -24,4 +25,7 @@ func TestErrorClass(t *testing.T) {
 	assert.Equal(t, "conn-refused", errorClass(errors.New("dial tcp: connection refused")))
 	assert.Equal(t, "timeout", errorClass(context.DeadlineExceeded))
 	assert.Equal(t, "other", errorClass(errors.New("boom")))
+
+	// errors.As must unwrap a wrapped PgError, not fall through to string match
+	assert.Equal(t, "read-only", errorClass(fmt.Errorf("driver: %w", &pgconn.PgError{Code: "25006"})))
 }
