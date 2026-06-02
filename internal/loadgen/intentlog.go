@@ -14,11 +14,16 @@ const (
 	StatusAttempt = "attempt"
 	StatusAcked   = "acked"
 	StatusFailed  = "failed"
-	StatusIndoubt = "indoubt"
+	StatusIndoubt = "indoubt" // wire value; prose docs spell it "in-doubt"
 )
 
 // Record is one line of the append-only JSONL intent-log. Attempt records carry
 // the full operation identity; result records carry op_id + status (+ error).
+//
+// omitempty invariant: WriterID (>=1000), ClientSeq (>=1), and Rows (>=1) are
+// assigned by the runner and are never zero in attempt records, so omitempty
+// never silently drops a meaningful value. Result records deliberately omit
+// these fields to stay minimal (op_id + status + error + ts only).
 type Record struct {
 	OpID      string    `json:"op_id"`
 	Kind      string    `json:"kind,omitempty"`
@@ -91,7 +96,10 @@ func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.f.Sync(); err != nil {
-		return err
+		return fmt.Errorf("intentlog sync on close: %w", err)
 	}
-	return w.f.Close()
+	if err := w.f.Close(); err != nil {
+		return fmt.Errorf("intentlog close: %w", err)
+	}
+	return nil
 }
