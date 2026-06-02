@@ -59,6 +59,13 @@ func (s *verifyOldPrimaryStopped) Run(ctx context.Context) error {
 		return fmt.Errorf("cleanup: cannot reach old primary for verification: %w", err)
 	}
 	// A successful query means the old primary is still up. We want it stopped.
+	//
+	// Caveat: a *transient* query error (timeout, brief network drop) is treated
+	// the same as "down". That is acceptable here because this is an operator-gated
+	// terminal phase — the operator has already stopped the node and this step only
+	// confirms it. If false-confirmation under flaky networks becomes a concern,
+	// harden by requiring a refused/closed connection (vs. any error) or by probing
+	// N times and passing only if every attempt fails.
 	if _, err := old.IsInRecovery(ctx); err == nil {
 		return fmt.Errorf("cleanup: old primary still reachable; stop it, then re-run")
 	}
