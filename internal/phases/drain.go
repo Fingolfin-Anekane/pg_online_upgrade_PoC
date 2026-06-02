@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pglogrepl"
+
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/dmbabuev/pg-upgrade/internal/slotdrain"
 	"github.com/dmbabuev/pg-upgrade/internal/state"
@@ -73,7 +75,15 @@ func (s *verifySlotDrained) Run(ctx context.Context) error {
 	if slot == nil {
 		return fmt.Errorf("drain: slot %s missing after drain", s.d.Cfg.Upgrade.SlotName)
 	}
-	if slot.ConfirmedFlushLSN != report.FinalFlushLSN {
+	flushLSN, err := pglogrepl.ParseLSN(slot.ConfirmedFlushLSN)
+	if err != nil {
+		return fmt.Errorf("drain: parse confirmed_flush_lsn %q: %w", slot.ConfirmedFlushLSN, err)
+	}
+	expectedLSN, err := pglogrepl.ParseLSN(report.FinalFlushLSN)
+	if err != nil {
+		return fmt.Errorf("drain: parse drain final flush %q: %w", report.FinalFlushLSN, err)
+	}
+	if flushLSN != expectedLSN {
 		return fmt.Errorf("drain: confirmed_flush_lsn %s != drained final %s", slot.ConfirmedFlushLSN, report.FinalFlushLSN)
 	}
 	return nil

@@ -8,6 +8,7 @@ import (
 	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
 	"github.com/dmbabuev/pg-upgrade/internal/slotdrain"
+	"github.com/dmbabuev/pg-upgrade/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,4 +52,43 @@ func TestDrainTransitionsToUpgrade(t *testing.T) {
 	tr := ph.Transitions()
 	require.Len(t, tr, 1)
 	assert.Equal(t, "upgrade", tr[0].To)
+}
+
+func TestDrainErrorsWithoutTargetLSN(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.Advance("drain"))
+	d := Deps{Mgr: mgr, Drain: func(context.Context, slotdrain.Config) (*slotdrain.Report, error) { return nil, nil }}
+	step := &runSlotDrain{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "target_lsn not set")
+}
+
+func TestVerifySlotDrainedMismatch(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.Advance("drain"))
+	require.NoError(t, mgr.SetDrainReport(&state.DrainReport{FinalFlushLSN: "0/3FA20000"}))
+	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/10"}} // mismatch
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SlotName: "slot_up"}}, Mgr: mgr,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	step := &verifySlotDrained{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "!=")
+}
+
+func TestVerifySlotDrainedMissingSlot(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.Advance("drain"))
+	require.NoError(t, mgr.SetDrainReport(&state.DrainReport{FinalFlushLSN: "0/3FA20000"}))
+	primary := &fakePG{slot: nil}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SlotName: "slot_up"}}, Mgr: mgr,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	step := &verifySlotDrained{d}
+	err := step.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing")
 }
