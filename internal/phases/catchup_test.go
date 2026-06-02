@@ -92,7 +92,14 @@ func TestVerifyNewClusterHealthyRejectsNoReplica(t *testing.T) {
 	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{{Name: "n1", Role: "leader"}}}}
 	err := (&verifyNewClusterHealthy{Deps{NewPatroni: newPat}}).Run(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no replica")
+	assert.Contains(t, err.Error(), "no standby")
+}
+
+func TestVerifyNewClusterHealthyAcceptsSyncStandby(t *testing.T) {
+	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
+		{Name: "n1", Role: "leader"}, {Name: "n2", Role: "sync_standby"},
+	}}}
+	require.NoError(t, (&verifyNewClusterHealthy{Deps{NewPatroni: newPat}}).Run(context.Background()))
 }
 
 func TestWaitLagZeroErrorsWhenBehind(t *testing.T) {

@@ -124,6 +124,18 @@ func runCmd(cfgPath *string) *cobra.Command {
 			if err := cfg.ValidateForRun(); err != nil {
 				return err
 			}
+			for _, c := range []struct{ name, dsn string }{
+				{"superuser_dsn", cfg.PG.SuperuserDSN},
+				{"pg17_dsn", cfg.Upgrade.PG17DSN},
+			} {
+				db, derr := connect.DatabaseOf(c.dsn)
+				if derr != nil {
+					return derr
+				}
+				if db != cfg.Upgrade.DBName {
+					return fmt.Errorf("config: %s database %q must match upgrade.dbname %q (the freeze, publication and subscription all act on the DSN's database)", c.name, db, cfg.Upgrade.DBName)
+				}
+			}
 			if statePath == "" {
 				statePath = "pg-upgrade-state.json"
 			}

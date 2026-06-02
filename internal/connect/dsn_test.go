@@ -7,6 +7,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDatabaseOf(t *testing.T) {
+	db, err := DatabaseOf("host=p user=postgres dbname=app port=5432")
+	require.NoError(t, err)
+	assert.Equal(t, "app", db)
+
+	db, err = DatabaseOf("postgres://postgres@p:5432/app")
+	require.NoError(t, err)
+	assert.Equal(t, "app", db)
+}
+
 func TestDSNForHostSwapsHost(t *testing.T) {
 	out, err := DSNForHost("host=primary.old port=5432 user=postgres dbname=app", "n1.internal")
 	require.NoError(t, err)

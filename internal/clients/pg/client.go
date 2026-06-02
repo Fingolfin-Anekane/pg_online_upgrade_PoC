@@ -286,6 +286,7 @@ func (c *internalClient) SetSequenceValue(ctx context.Context, schema, name stri
 // reverse-apply worker) bypass the triggers and can still write, preserving
 // the rollback window. The database-level default_transaction_read_only is
 // intentionally NOT set — it would block the replica-role apply worker too.
+// The dbname parameter documents intent; the freeze acts on the connection's current database (the run command validates that this matches dbname).
 func (c *internalClient) FreezeForUpgrade(ctx context.Context, dbname string) error {
 	_, err := c.q.Exec(ctx, `
 		CREATE OR REPLACE FUNCTION raise_upgrade_readonly() RETURNS trigger AS $$

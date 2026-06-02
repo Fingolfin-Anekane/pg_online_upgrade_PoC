@@ -122,14 +122,14 @@ func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
 	if cluster.Leader() == nil {
 		return fmt.Errorf("catchup: new Patroni cluster has no leader (form the new cluster, then re-run)")
 	}
-	replicas := 0
+	standbys := 0
 	for _, m := range cluster.Members {
-		if m.Role == "replica" {
-			replicas++
+		if m.Role != "leader" { // replica, sync_standby, etc.
+			standbys++
 		}
 	}
-	if replicas < 1 {
-		return fmt.Errorf("catchup: new Patroni cluster has no replica yet (add replicas, then re-run)")
+	if standbys < 1 {
+		return fmt.Errorf("catchup: new Patroni cluster has no standby yet (add a replica, then re-run)")
 	}
 	return nil
 }
