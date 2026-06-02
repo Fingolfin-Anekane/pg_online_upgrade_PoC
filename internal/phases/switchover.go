@@ -107,8 +107,10 @@ func (s *syncSequences) Run(ctx context.Context) error {
 
 type setupReverseReplication struct{ d Deps }
 
-func (s *setupReverseReplication) ID() runner.StepID                   { return "SetupReverseReplication" }
-func (s *setupReverseReplication) Check(context.Context) (bool, error) { return false, nil }
+func (s *setupReverseReplication) ID() runner.StepID { return "SetupReverseReplication" }
+func (s *setupReverseReplication) Check(context.Context) (bool, error) {
+	return s.d.Mgr.Get().Artifacts.ReverseReplSetUp, nil
+}
 func (s *setupReverseReplication) Run(ctx context.Context) error {
 	pg17, err := s.d.PG17(ctx)
 	if err != nil {
@@ -125,7 +127,10 @@ func (s *setupReverseReplication) Run(ctx context.Context) error {
 	// Subscription on the old primary, pointing back at PG17 (creates its own slot
 	// on PG17). The old primary's apply worker runs as session_replication_role
 	// 'replica', so the DML freeze triggers do not fire for it.
-	return old.CreateSubscriptionCreatingSlot(ctx, s.d.Cfg.Upgrade.ReverseSubName, s.d.Cfg.Upgrade.PG17DSN, s.d.Cfg.Upgrade.ReversePubName)
+	if err := old.CreateSubscriptionCreatingSlot(ctx, s.d.Cfg.Upgrade.ReverseSubName, s.d.Cfg.Upgrade.PG17DSN, s.d.Cfg.Upgrade.ReversePubName); err != nil {
+		return err
+	}
+	return s.d.Mgr.SetReverseReplSetUp()
 }
 
 // --- NotifyDSNSwap (signal external tooling; operator confirms via checkpoint) ---
@@ -169,8 +174,10 @@ func (s *verifyTrafficOnNew) Run(ctx context.Context) error {
 
 type disableForwardSubscription struct{ d Deps }
 
-func (s *disableForwardSubscription) ID() runner.StepID                   { return "DisableForwardSubscription" }
-func (s *disableForwardSubscription) Check(context.Context) (bool, error) { return false, nil }
+func (s *disableForwardSubscription) ID() runner.StepID { return "DisableForwardSubscription" }
+func (s *disableForwardSubscription) Check(context.Context) (bool, error) {
+	return false, nil
+} // always-run: ALTER ... DISABLE is a no-op if already disabled
 func (s *disableForwardSubscription) Run(ctx context.Context) error {
 	pg17, err := s.d.PG17(ctx)
 	if err != nil {

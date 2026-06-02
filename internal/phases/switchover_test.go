@@ -118,6 +118,24 @@ func TestSwitchoverReverseSignalDisable(t *testing.T) {
 	assert.Equal(t, "sub_up", pg17.disabledSub)
 }
 
+func TestSetupReverseReplicationSkipsWhenDone(t *testing.T) {
+	pg17 := &fakePG{}
+	d := switchoverDeps(t, pg17, &fakePG{})
+	require.NoError(t, d.Mgr.SetReverseReplSetUp())
+	done, err := (&setupReverseReplication{d}).Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.Equal(t, "", pg17.createdPub) // create skipped on resume
+}
+
+func TestVerifyTrafficOnNewErrorsWhenNoBackends(t *testing.T) {
+	pg17 := &fakePG{appBackends: 0}
+	d := switchoverDeps(t, pg17, &fakePG{})
+	err := (&verifyTrafficOnNew{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no application traffic")
+}
+
 func TestValidateForRunRejectsZeroSequenceBuffer(t *testing.T) {
 	// constructed inline so the rest of the config is valid; only SequenceBuffer is 0
 	cfg := &config.Config{Upgrade: config.UpgradeConfig{

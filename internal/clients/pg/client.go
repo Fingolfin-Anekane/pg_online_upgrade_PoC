@@ -280,6 +280,12 @@ func (c *internalClient) SetSequenceValue(ctx context.Context, schema, name stri
 	return err
 }
 
+// FreezeForUpgrade installs DML triggers on all user tables that raise an
+// error for any INSERT/UPDATE/DELETE/TRUNCATE. Enforcement is purely
+// trigger-based: sessions with session_replication_role='replica' (the
+// reverse-apply worker) bypass the triggers and can still write, preserving
+// the rollback window. The database-level default_transaction_read_only is
+// intentionally NOT set — it would block the replica-role apply worker too.
 func (c *internalClient) FreezeForUpgrade(ctx context.Context, dbname string) error {
 	_, err := c.q.Exec(ctx, `
 		CREATE OR REPLACE FUNCTION raise_upgrade_readonly() RETURNS trigger AS $$
@@ -308,11 +314,6 @@ func (c *internalClient) FreezeForUpgrade(ctx context.Context, dbname string) er
 		END;
 		$$;
 	`)
-	if err != nil {
-		return err
-	}
-	_, err = c.q.Exec(ctx, fmt.Sprintf("ALTER DATABASE %s SET default_transaction_read_only = on",
-		pgx.Identifier{dbname}.Sanitize()))
 	return err
 }
 
