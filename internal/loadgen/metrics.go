@@ -12,7 +12,6 @@ type Metrics struct {
 	commits  map[string]int64
 	errors   map[string]int64
 	switched bool
-	switchAt time.Time
 	firstErr time.Time // first error after switch
 	firstOKB time.Time // first success on pool B after switch
 }
@@ -25,7 +24,6 @@ func (m *Metrics) RecordSwitch(t time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.switched = true
-	m.switchAt = t
 }
 
 func (m *Metrics) RecordCommit(kind, dsn string, t time.Time) {
@@ -58,7 +56,7 @@ func (m *Metrics) Window() (start, end time.Time, dur time.Duration, ok bool) {
 	end = m.firstOKB
 	start = m.firstErr
 	if start.IsZero() || start.After(end) {
-		start = end // no error window: seamless
+		start = end // seamless (no error) or error arrived after recovery
 	}
 	return start, end, end.Sub(start), true
 }
