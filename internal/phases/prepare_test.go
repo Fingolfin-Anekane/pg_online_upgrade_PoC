@@ -37,6 +37,9 @@ type fakePG struct {
 	createdRevSub   string
 	disabledSub     string
 	appBackends     int
+	droppedSub      []string
+	droppedPub      []string
+	unfrozen        string
 }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
