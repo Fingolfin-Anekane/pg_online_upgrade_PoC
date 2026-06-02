@@ -177,3 +177,30 @@ func TestPublicationExists(t *testing.T) {
 	assert.True(t, exists)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestServerVersionNum(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery("server_version_num").
+		WillReturnRows(pgxmock.NewRows([]string{"server_version_num"}).AddRow("120008"))
+
+	c := pgclient.NewFromPool(mock)
+	v, err := c.ServerVersionNum(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 120008, v)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestClearPrimaryConninfo(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectExec("ALTER SYSTEM SET primary_conninfo").WillReturnResult(pgxmock.NewResult("ALTER", 0))
+
+	c := pgclient.NewFromPool(mock)
+	require.NoError(t, c.ClearPrimaryConninfo(context.Background()))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,8 @@ import (
 type Client interface {
 	ShowWALLevel(ctx context.Context) (string, error)
 	IsInRecovery(ctx context.Context) (bool, error)
+	ServerVersionNum(ctx context.Context) (int, error)
+	ClearPrimaryConninfo(ctx context.Context) error
 	GetLastWALReplayLSN(ctx context.Context) (string, error)
 	GetWALReceiverReceivedLSN(ctx context.Context) (string, error)
 	IsWALReceiverActive(ctx context.Context) (bool, error)
@@ -92,6 +95,31 @@ func (c *internalClient) IsInRecovery(ctx context.Context) (bool, error) {
 	var v bool
 	err := c.q.QueryRow(ctx, "SELECT pg_is_in_recovery()").Scan(&v)
 	return v, err
+}
+
+// ServerVersionNum returns the integer server version (e.g. 120008 for 12.8),
+// used to choose the version-appropriate WAL-disconnect mechanism.
+func (c *internalClient) ServerVersionNum(ctx context.Context) (int, error) {
+	var s string
+	if err := c.q.QueryRow(ctx, "SHOW server_version_num").Scan(&s); err != nil {
+		return 0, fmt.Errorf("pg: server_version_num: %w", err)
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("pg: server_version_num parse %q: %w", s, err)
+	}
+	return v, nil
+}
+
+// ClearPrimaryConninfo sets primary_conninfo empty via ALTER SYSTEM (writing
+// postgresql.auto.conf) WITHOUT reloading. On PG 12 the parameter is
+// PGC_POSTMASTER, so the caller must restart for it to take effect; on PG 13+
+// prefer DisconnectFromWAL (which also reloads).
+func (c *internalClient) ClearPrimaryConninfo(ctx context.Context) error {
+	if _, err := c.q.Exec(ctx, `ALTER SYSTEM SET primary_conninfo = ''`); err != nil {
+		return fmt.Errorf("pg: clear primary_conninfo: %w", err)
+	}
+	return nil
 }
 
 func (c *internalClient) GetLastWALReplayLSN(ctx context.Context) (string, error) {
@@ -298,6 +326,12 @@ func (p *PoolClient) ShowWALLevel(ctx context.Context) (string, error) {
 }
 func (p *PoolClient) IsInRecovery(ctx context.Context) (bool, error) {
 	return p.ic().IsInRecovery(ctx)
+}
+func (p *PoolClient) ServerVersionNum(ctx context.Context) (int, error) {
+	return p.ic().ServerVersionNum(ctx)
+}
+func (p *PoolClient) ClearPrimaryConninfo(ctx context.Context) error {
+	return p.ic().ClearPrimaryConninfo(ctx)
 }
 func (p *PoolClient) GetLastWALReplayLSN(ctx context.Context) (string, error) {
 	return p.ic().GetLastWALReplayLSN(ctx)
