@@ -54,3 +54,10 @@ func TestVerifyOldPrimaryStoppedErrorsWhenReachable(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still reachable")
 }
+
+func TestVerifyOldPrimaryStoppedErrorsOnProviderFailure(t *testing.T) {
+	d := Deps{Primary: func(context.Context) (pg.Client, error) { return nil, errors.New("bad dsn") }}
+	err := (&verifyOldPrimaryStopped{d}).Run(context.Background())
+	require.Error(t, err) // provider error is surfaced, not treated as "down"
+	assert.Contains(t, err.Error(), "cannot reach old primary")
+}

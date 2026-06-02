@@ -10,8 +10,12 @@ import (
 
 // NewCleanup builds Phase 8: archive the pg_upgrade logs and confirm the old
 // primary is decommissioned. Terminal — the run completes after this phase.
-// Removing stale DCS keys (etcdctl) is an operator action noted in the closing
-// message; it requires direct etcd access the binary deliberately avoids.
+//
+// The spec's StopOldPostgres is operator-delegated (the old primary is a
+// separate node the binary cannot pg_ctl), so VerifyOldPrimaryStopped only
+// confirms the operator's stop. RemoveOldDCSKeys (etcdctl) is likewise operator
+// follow-up, noted in the closing message — both require access the binary
+// deliberately avoids.
 func NewCleanup(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "cleanup",
@@ -29,8 +33,11 @@ type archivePgUpgradeLogs struct{ d Deps }
 
 func (s *archivePgUpgradeLogs) ID() runner.StepID { return "ArchivePgUpgradeLogs" }
 func (s *archivePgUpgradeLogs) Check(context.Context) (bool, error) {
+	// "archive dir exists" is treated as already-archived. A partial copy left by
+	// a mid-run crash can be re-archived by removing LogArchiveDir first; these
+	// are diagnostic logs, not operational data.
 	if _, err := os.Stat(s.d.Cfg.Upgrade.LogArchiveDir); err == nil {
-		return true, nil // already archived
+		return true, nil
 	}
 	return false, nil
 }
@@ -47,7 +54,9 @@ func (s *verifyOldPrimaryStopped) Check(context.Context) (bool, error) { return 
 func (s *verifyOldPrimaryStopped) Run(ctx context.Context) error {
 	old, err := s.d.Primary(ctx)
 	if err != nil {
-		return nil // cannot build a client -> treat as down
+		// A provider error is a config problem (the pool is built lazily, so it
+		// is NOT a "down" signal); surface it rather than declaring success.
+		return fmt.Errorf("cleanup: cannot reach old primary for verification: %w", err)
 	}
 	// A successful query means the old primary is still up. We want it stopped.
 	if _, err := old.IsInRecovery(ctx); err == nil {
