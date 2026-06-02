@@ -143,6 +143,7 @@ func TestValidateForRunRejectsZeroSequenceBuffer(t *testing.T) {
 		PatroniConfigPath: "/p.yml", SubscriptionName: "s", ReversePubName: "rp",
 		ReverseSubName: "rs", DBName: "app", PG17DSN: "host=n1", NewPatroniURL: "http://x",
 		DSNSwapSignalPath: "/sig", SequenceBuffer: 0,
+		PgUpgradeLogDir: "/d", LogArchiveDir: "/a",
 	}}
 	require.Error(t, cfg.ValidateForRun())
 }
