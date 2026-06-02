@@ -22,7 +22,7 @@ func InteractiveCheckpoint(in io.Reader, out io.Writer, prompts PhasePrompts) Ch
 			msg = fmt.Sprintf("Phase %q complete. Proceed to %q?", from, to)
 		}
 		fmt.Fprintf(out, "\n>>> %s [y/N]: ", msg)
-		line, _ := reader.ReadString('\n')
+		line, _ := reader.ReadString('\n') // EOF (Ctrl-D / closed stdin) -> "" -> declines (fail-closed)
 		if strings.ToLower(strings.TrimSpace(line)) != "y" {
 			return fmt.Errorf("operator declined at phase %q", from)
 		}
