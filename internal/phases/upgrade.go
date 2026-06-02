@@ -128,7 +128,7 @@ func (s *runPgUpgrade) Run(ctx context.Context) error {
 	if err := s.d.Tools.Upgrade(ctx, s.d.upgradeOpts()); err != nil {
 		return err
 	}
-	cd, err := s.d.Tools.NewControlData(ctx, s.d.Cfg.Upgrade.DataDir)
+	cd, err := s.d.Tools.NewControlData(ctx, s.d.Cfg.Upgrade.NewDataDir)
 	if err != nil {
 		return err
 	}

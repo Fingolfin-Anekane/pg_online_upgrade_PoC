@@ -150,7 +150,8 @@ func runCmd(cfgPath *string) *cobra.Command {
 			}
 			defer n1.Close()
 
-			primaryProvider := newPrimaryProvider(cfg.PG.SuperuserDSN, mgr)
+			primaryProvider, closePrimary := newPrimaryProvider(cfg.PG.SuperuserDSN, mgr)
+			defer closePrimary()
 			patClient := patroni.NewHTTPClient("http://localhost:8008")
 
 			d := phases.Deps{
@@ -185,10 +186,10 @@ func runCmd(cfgPath *string) *cobra.Command {
 }
 
 // newPrimaryProvider returns a provider that builds (once) a PG client to the
-// primary host recorded in state by DiscoverTopology.
-func newPrimaryProvider(template string, mgr *state.Manager) func(context.Context) (pgclient.Client, error) {
+// primary host recorded in state by DiscoverTopology, plus a close func for it.
+func newPrimaryProvider(template string, mgr *state.Manager) (func(context.Context) (pgclient.Client, error), func()) {
 	var cached pgclient.Client
-	return func(ctx context.Context) (pgclient.Client, error) {
+	provider := func(ctx context.Context) (pgclient.Client, error) {
 		if cached != nil {
 			return cached, nil
 		}
@@ -207,4 +208,10 @@ func newPrimaryProvider(template string, mgr *state.Manager) func(context.Contex
 		cached = c
 		return cached, nil
 	}
+	closeFn := func() {
+		if cached != nil {
+			cached.Close()
+		}
+	}
+	return provider, closeFn
 }

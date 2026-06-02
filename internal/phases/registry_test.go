@@ -1,8 +1,10 @@
 package phases
 
 import (
+	"path/filepath"
 	"testing"
 
+	"github.com/dmbabuev/pg-upgrade/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,4 +17,10 @@ func TestPhases1to4Registry(t *testing.T) {
 		ids = append(ids, p.ID())
 	}
 	assert.Equal(t, []string{"prepare", "isolate", "drain", "upgrade"}, ids)
+}
+
+func TestFirstPhaseMatchesManagerDefault(t *testing.T) {
+	m, err := state.NewManager(filepath.Join(t.TempDir(), "s.json"), "test")
+	require.NoError(t, err)
+	assert.Equal(t, FirstPhase, m.Get().Current)
 }
