@@ -63,3 +63,46 @@ func TestReconcileDetectsPhantomAndSeq(t *testing.T) {
 	assert.True(t, f.SeqBehind)
 	assert.True(t, f.Failed())
 }
+
+func TestReconcileCleanPass(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery("GROUP BY writer_id, client_seq").
+		WillReturnRows(pgxmock.NewRows([]string{"writer_id", "client_seq", "c"}).
+			AddRow(7, int64(5), int64(1)).
+			AddRow(7, int64(6), int64(1)))
+	expectAggregates(mock, 0, 6, 6, 100000, 100) // last_value==max, sum matches
+
+	ops := []Op{
+		{OpID: "o1", WriterID: 7, ClientSeq: 5, Rows: 1, Status: "acked"},
+		{OpID: "o2", WriterID: 7, ClientSeq: 6, Rows: 1, Status: "acked"},
+	}
+	f, err := Reconcile(context.Background(), mock, ops, 1000)
+	require.NoError(t, err)
+	assert.False(t, f.Failed())
+	assert.Empty(t, f.Lost)
+	assert.Empty(t, f.Dup)
+	assert.Empty(t, f.Phantom)
+}
+
+func TestReconcileDupBatchAppendsOnce(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	// long-txn op rows=3 at seq 10,11,12; seq 10 and 11 are duplicated (count 2)
+	mock.ExpectQuery("GROUP BY writer_id, client_seq").
+		WillReturnRows(pgxmock.NewRows([]string{"writer_id", "client_seq", "c"}).
+			AddRow(3, int64(10), int64(2)).
+			AddRow(3, int64(11), int64(2)).
+			AddRow(3, int64(12), int64(1)))
+	expectAggregates(mock, 0, 12, 12, 100000, 100)
+
+	ops := []Op{{OpID: "b1", WriterID: 3, ClientSeq: 10, Rows: 3, Status: "acked"}}
+	f, err := Reconcile(context.Background(), mock, ops, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b1"}, f.Dup) // once, despite two duplicated rows
+	assert.Empty(t, f.Lost)                // all three rows present
+}

@@ -47,18 +47,24 @@ func Reconcile(ctx context.Context, db Querier, ops []Op, balance int64) (*Findi
 	}
 
 	f := &Findings{}
+	// An op's rows occupy client_seq [ClientSeq, ClientSeq+Rows). Note an op may
+	// appear in more than one finding list — e.g. a torn acked batch with one
+	// duplicated row and one missing row is both Dup and Lost; that is intended.
 	for _, op := range ops {
-		var seen, missing int64
+		var seen, missing, dups int64
 		for i := int64(0); i < op.Rows; i++ {
 			c := present[key{op.WriterID, op.ClientSeq + i}]
 			if c > 1 {
-				f.Dup = append(f.Dup, op.OpID)
+				dups++
 			}
 			if c >= 1 {
 				seen++
 			} else {
 				missing++
 			}
+		}
+		if dups > 0 {
+			f.Dup = append(f.Dup, op.OpID) // once per op, not once per duplicated row
 		}
 		switch op.Status {
 		case "acked":
@@ -93,7 +99,7 @@ func loadMembership(ctx context.Context, db Querier) (map[key]int64, error) {
 		var w int
 		var seq, c int64
 		if err := rows.Scan(&w, &seq, &c); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reconcile membership scan: %w", err)
 		}
 		m[key{w, seq}] = c
 	}
