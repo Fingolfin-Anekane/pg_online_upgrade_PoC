@@ -51,7 +51,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, cfg.validate()
 }
 
-// ValidateForRun checks the additional fields the full `run` (phases 1-4)
+// ValidateForRun checks the additional fields the full `run` (phases 1-6)
 // requires beyond the base Load() validation. drain-slot/status do not call it.
 func (c *Config) ValidateForRun() error {
 	u := c.Upgrade

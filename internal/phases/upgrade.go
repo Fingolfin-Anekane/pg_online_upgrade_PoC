@@ -12,8 +12,8 @@ import (
 )
 
 // NewUpgrade builds Phase 4: promote N1, shut it down cleanly, run pg_upgrade
-// --link (point of no return), and write the new Patroni config. Terminal in
-// Plan 2 (phases 5-8 arrive in Plan 3).
+// --link (point of no return), and write the new Patroni config. Transitions to
+// catchup (Phase 5).
 func NewUpgrade(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "upgrade",
