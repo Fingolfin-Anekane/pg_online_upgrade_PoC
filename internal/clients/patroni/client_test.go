@@ -94,6 +94,35 @@ func TestResume_PatchesConfigPauseFalse(t *testing.T) {
 	assert.Equal(t, false, body["pause"])
 }
 
+func TestPause_SendsBasicAuthWhenConfigured(t *testing.T) {
+	var gotUser, gotPass string
+	var hadAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, hadAuth = r.BasicAuth()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := patroni.NewHTTPClient(srv.URL, patroni.WithBasicAuth("admin", "s3cret"))
+	require.NoError(t, c.Pause(context.Background()))
+	assert.True(t, hadAuth, "expected Authorization header on PATCH /config")
+	assert.Equal(t, "admin", gotUser)
+	assert.Equal(t, "s3cret", gotPass)
+}
+
+func TestPause_NoAuthHeaderWhenUnconfigured(t *testing.T) {
+	var hadAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _, hadAuth = r.BasicAuth()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := patroni.NewHTTPClient(srv.URL) // no creds
+	require.NoError(t, c.Pause(context.Background()))
+	assert.False(t, hadAuth, "no Authorization header expected when creds are unset")
+}
+
 func TestGetCluster_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

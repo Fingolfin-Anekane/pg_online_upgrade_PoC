@@ -167,11 +167,14 @@ func runCmd(cfgPath *string) *cobra.Command {
 
 			primaryProvider, closePrimary := newPrimaryProvider(cfg.PG.SuperuserDSN, mgr)
 			defer closePrimary()
-			patClient := patroni.NewHTTPClient("http://localhost:8008")
+			// Patroni REST auth (if configured) is shared by both clusters; PATCH
+			// /config for pause/resume needs it when restapi.authentication is on.
+			patAuth := patroni.WithBasicAuth(cfg.Patroni.RESTUsername, cfg.Patroni.RESTPassword)
+			patClient := patroni.NewHTTPClient("http://localhost:8008", patAuth)
 
 			pg17Provider, closePG17 := newPG17Provider(cfg.Upgrade.PG17DSN)
 			defer closePG17()
-			newPat := patroni.NewHTTPClient(cfg.Upgrade.NewPatroniURL)
+			newPat := patroni.NewHTTPClient(cfg.Upgrade.NewPatroniURL, patAuth)
 
 			d := phases.Deps{
 				Cfg:         *cfg,

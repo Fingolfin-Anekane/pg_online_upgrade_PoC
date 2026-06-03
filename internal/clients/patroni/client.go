@@ -44,10 +44,37 @@ func (c *ClusterInfo) Leader() *Member {
 type HTTPClient struct {
 	baseURL    string
 	httpClient *http.Client
+	username   string
+	password   string
 }
 
-func NewHTTPClient(baseURL string) *HTTPClient {
-	return &HTTPClient{baseURL: baseURL, httpClient: &http.Client{}}
+// Option configures an HTTPClient at construction time.
+type Option func(*HTTPClient)
+
+// WithBasicAuth sets the HTTP Basic credentials Patroni requires for unsafe REST
+// methods (PATCH/PUT/POST) when restapi.authentication is enabled. Empty
+// username leaves the client unauthenticated.
+func WithBasicAuth(username, password string) Option {
+	return func(c *HTTPClient) {
+		c.username = username
+		c.password = password
+	}
+}
+
+func NewHTTPClient(baseURL string, opts ...Option) *HTTPClient {
+	c := &HTTPClient{baseURL: baseURL, httpClient: &http.Client{}}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// authorize attaches Basic auth to req when credentials are configured. It is a
+// no-op otherwise, so unauthenticated Patroni setups keep working.
+func (c *HTTPClient) authorize(req *http.Request) {
+	if c.username != "" {
+		req.SetBasicAuth(c.username, c.password)
+	}
 }
 
 func (c *HTTPClient) GetCluster(ctx context.Context) (*ClusterInfo, error) {
@@ -55,6 +82,7 @@ func (c *HTTPClient) GetCluster(ctx context.Context) (*ClusterInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.authorize(req) // harmless for GET; required if the operator protects all endpoints
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("patroni /cluster: %w", err)
@@ -97,6 +125,7 @@ func (c *HTTPClient) patchConfig(ctx context.Context, patch map[string]any) erro
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("patroni PATCH /config: %w", err)

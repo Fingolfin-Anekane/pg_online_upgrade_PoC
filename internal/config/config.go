@@ -12,6 +12,15 @@ type Config struct {
 	ClusterName string        `yaml:"cluster_name"`
 	Upgrade     UpgradeConfig `yaml:"upgrade"`
 	PG          PGConfig      `yaml:"pg"`
+	Patroni     PatroniConfig `yaml:"patroni"`
+}
+
+// PatroniConfig holds the credentials Patroni requires for unsafe REST methods
+// (PATCH /config for pause/resume) when restapi.authentication is enabled.
+// Leave empty for clusters whose REST API is unauthenticated.
+type PatroniConfig struct {
+	RESTUsername string `yaml:"rest_username"`
+	RESTPassword string `yaml:"rest_password"`
 }
 
 type UpgradeConfig struct {

@@ -77,3 +77,11 @@ pg:
   # Superuser DSN to the LOCAL node (target_node) the agent drives directly:
   # promote, freeze triggers, slot ops. [base]
   superuser_dsn: "host=/var/run/postgresql port=5432 user=postgres dbname=appdb"
+
+# Patroni REST API credentials. Required only if restapi.authentication is
+# enabled on the cluster: Patroni protects unsafe methods (PATCH /config, used
+# for pause/resume) with HTTP Basic auth, while GET /cluster stays open. Leave
+# both empty for an unauthenticated REST API. [optional]
+patroni:
+  rest_username: patroni
+  rest_password: change-me
