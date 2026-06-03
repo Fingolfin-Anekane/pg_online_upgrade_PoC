@@ -29,6 +29,23 @@ pg:
 	assert.Equal(t, "pub_upgrade", cfg.Upgrade.PublicationName)
 	assert.Equal(t, "/usr/lib/postgresql/17/bin", cfg.Upgrade.NewPGBindir)
 	assert.Equal(t, "host=primary port=5432 dbname=postgres user=postgres password=s3cr3t", cfg.PG.SuperuserDSN)
+	assert.Equal(t, "postgres", cfg.PG.OSUser, "os_user defaults to postgres when omitted")
+}
+
+func TestLoad_OSUserExplicitOverridesDefault(t *testing.T) {
+	f := writeTempFile(t, `
+cluster_name: prod
+upgrade:
+  slot_name: slot_upgrade
+  publication_name: pub_upgrade
+  new_pg_bindir: /usr/lib/postgresql/17/bin
+pg:
+  superuser_dsn: "host=primary port=5432 dbname=postgres user=postgres"
+  os_user: pgowner
+`)
+	cfg, err := config.Load(f)
+	require.NoError(t, err)
+	assert.Equal(t, "pgowner", cfg.PG.OSUser)
 }
 
 func TestLoad_MissingClusterName(t *testing.T) {

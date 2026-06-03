@@ -124,13 +124,10 @@ func runCmd(cfgPath *string) *cobra.Command {
 			if err := cfg.ValidateForRun(); err != nil {
 				return err
 			}
-			// PG tools (pg_ctl/pg_upgrade/pg_controldata) refuse to run as root. If
-			// we are root, pg.os_user must be set so we can drop to it; fail now with
-			// a clear message rather than deep inside the upgrade phase.
+			// PG tools (pg_ctl/pg_upgrade/pg_controldata) refuse to run as root, so
+			// when we are root they run as pg.os_user (defaulted to "postgres" by
+			// config.Load). Surface which account that is.
 			if os.Geteuid() == 0 {
-				if cfg.PG.OSUser == "" {
-					return fmt.Errorf("running as root but pg.os_user is unset: PostgreSQL tools refuse to run as root. Set pg.os_user (e.g. \"postgres\") in %s", *cfgPath)
-				}
 				fmt.Fprintf(os.Stdout, "running as root; PG CLI tools will run as pg.os_user=%q\n", cfg.PG.OSUser)
 			}
 			for _, c := range []struct{ name, dsn string }{

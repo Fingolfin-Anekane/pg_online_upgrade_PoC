@@ -79,8 +79,8 @@ pg:
   superuser_dsn: "host=/var/run/postgresql port=5432 user=postgres dbname=appdb"
   # OS account that owns the data directory. pg_ctl/pg_upgrade/pg_controldata
   # refuse to run as root, so when the orchestrator runs as root it drops
-  # privileges to this user. Leave empty if you run pg-upgrade as that user. The
-  # pg_upgrade_log_dir must be writable by this user. [run, if running as root]
+  # privileges to this user. Defaults to "postgres" if omitted; the
+  # pg_upgrade_log_dir must be writable by this user. [optional]
   os_user: postgres
 
 # Patroni REST API credentials. Required only if restapi.authentication is
