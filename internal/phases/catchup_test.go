@@ -2,6 +2,8 @@ package phases
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
@@ -33,6 +35,8 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 	}
 	require.NoError(t, mgr.SetPrimaryHost("primary.host"))
 
+	patroniCfg := filepath.Join(t.TempDir(), "patroni.yml")
+	require.NoError(t, os.WriteFile(patroniCfg, []byte("scope: prod-17\npostgresql:\n  data_dir: /nd\n"), 0o644))
 	pg17 := &fakePG{}                                    // subscription created in the loop (subExists flips true)
 	oldPrimary := &fakePG{subLag: &pg.SubscriptionLag{}} // publisher: zero lag
 	tools := &fakeTools{running: true}                   // PG17 already up -> StartPG17OnN1 skipped
@@ -41,9 +45,9 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 		{Name: "n2", Host: "n2", Role: "replica"},
 	}}}
 	d := Deps{
-		Cfg: config.Config{Upgrade: config.UpgradeConfig{
+		Cfg: config.Config{ClusterName: "prod", Upgrade: config.UpgradeConfig{
 			SubscriptionName: "sub_up", PublicationName: "pub_up", SlotName: "slot_up",
-			NewPGBindir: "/n", NewDataDir: "/nd",
+			NewPGBindir: "/n", NewDataDir: "/nd", PatroniConfigPath: patroniCfg,
 		}, PG: config.PGConfig{SuperuserDSN: "host=tmpl"}},
 		Mgr: mgr, Tools: tools, NewPatroni: newPat,
 		PG17:    func(context.Context) (pg.Client, error) { return pg17, nil },
@@ -78,6 +82,33 @@ func TestStartPG17SkipsWhenAlreadyRunning(t *testing.T) {
 	done, err := (&startPG17{d}).Check(context.Background())
 	require.NoError(t, err)
 	assert.True(t, done) // already up -> do not start a second postmaster
+}
+
+func verifyPatroniDeps(t *testing.T, body string) Deps {
+	p := filepath.Join(t.TempDir(), "patroni.yml")
+	require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
+	return Deps{Mgr: testMgr(t), Cfg: config.Config{ClusterName: "prod", Upgrade: config.UpgradeConfig{
+		PatroniConfigPath: p, NewDataDir: "/data/pg17",
+	}}}
+}
+
+func TestVerifyNewPatroniConfig_RejectsOldScope(t *testing.T) {
+	d := verifyPatroniDeps(t, "scope: prod\npostgresql:\n  data_dir: /data/pg17\n")
+	err := (&verifyNewPatroniConfig{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must differ from the old cluster")
+}
+
+func TestVerifyNewPatroniConfig_RejectsWrongDataDir(t *testing.T) {
+	d := verifyPatroniDeps(t, "scope: prod-17\npostgresql:\n  data_dir: /wrong\n")
+	err := (&verifyNewPatroniConfig{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must match upgrade.new_data_dir")
+}
+
+func TestVerifyNewPatroniConfig_AcceptsFreshScope(t *testing.T) {
+	d := verifyPatroniDeps(t, "scope: prod-17\npostgresql:\n  data_dir: /data/pg17\n")
+	require.NoError(t, (&verifyNewPatroniConfig{d}).Run(context.Background()))
 }
 
 func TestCatchupTransitionsToSwitchover(t *testing.T) {

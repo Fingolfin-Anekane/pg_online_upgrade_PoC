@@ -52,6 +52,22 @@ func (s *initNewDataDir) Run(ctx context.Context) error {
 	return nil
 }
 
+// parsePatroniScopeDataDir extracts the scope and postgresql.data_dir from a
+// Patroni config. Either may be empty if set via environment variables instead
+// of the file; callers must tolerate that.
+func parsePatroniScopeDataDir(patroniYAML []byte) (scope, dataDir string, err error) {
+	var doc struct {
+		Scope      string `yaml:"scope"`
+		Postgresql struct {
+			DataDir string `yaml:"data_dir"`
+		} `yaml:"postgresql"`
+	}
+	if err := yaml.Unmarshal(patroniYAML, &doc); err != nil {
+		return "", "", fmt.Errorf("catchup: parse patroni config: %w", err)
+	}
+	return doc.Scope, doc.Postgresql.DataDir, nil
+}
+
 // parseInitdbOptions turns a Patroni config's bootstrap.initdb list into initdb
 // command-line flags. Patroni encodes each entry either as a bare string (a flag
 // like "data-checksums") or a single-key mapping (an option like "encoding: UTF8").
