@@ -41,11 +41,25 @@ upgrade:
   # [run]
   new_data_dir: /var/lib/postgresql/17/main
 
-  # Path to the new PG17 cluster's patroni.yml on target_node (read-only for
-  # pg-upgrade: used as the default source of bootstrap.initdb, see
-  # patroni_initdb_config). The operator owns this file; the binary brings
-  # Patroni up with it via patroni_start_command. [run]
+  # Path to the new PG17 cluster's patroni.yml on target_node. The catchup
+  # PatchNewPatroniConfig step REWRITES this file in place before starting
+  # Patroni — setting scope, postgresql.data_dir/bin_dir (and config_dir when
+  # new_config_dir is set) — and saves the operator's original to <path>.bak.
+  # The operator owns the rest of the file. It is also the default source of
+  # bootstrap.initdb (see patroni_initdb_config). [run]
   patroni_config_path: /etc/patroni/patroni.yml
+
+  # DCS scope (Patroni cluster name) for the upgraded PG17 cluster, written into
+  # patroni_config_path. MUST differ from cluster_name: the upgraded cluster has
+  # a new system identifier, so reusing the old scope makes Patroni refuse to
+  # start (system ID mismatch). Empty defaults to "<cluster_name>-17". [optional]
+  new_scope: ""
+
+  # PG17 config_dir written into patroni_config_path (postgresql.config_dir).
+  # Empty leaves config_dir untouched (Patroni defaults it to data_dir). Set it
+  # when the new cluster's config_dir differs from its data_dir, e.g. a Debian
+  # layout like /etc/postgresql/17/main. [optional]
+  new_config_dir: ""
 
   # Command that brings Patroni up on target_node during catchup, so the new PG17
   # cluster comes up Patroni-managed (adopting the upgraded data dir) rather than
