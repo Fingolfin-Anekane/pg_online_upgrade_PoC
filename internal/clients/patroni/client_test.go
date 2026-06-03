@@ -39,6 +39,29 @@ func TestGetCluster_ReturnsLeaderAndMembers(t *testing.T) {
 	assert.Equal(t, "leader", leader.Role)
 }
 
+func TestGetCluster_ToleratesNonNumericLag(t *testing.T) {
+	// Patroni reports lag as the string "unknown" when it cannot be determined,
+	// and as null for some members; neither must break decoding.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"members": []map[string]any{
+				{"name": "n0", "host": "n0", "role": "leader", "lag": 0},
+				{"name": "n1", "host": "n1", "role": "replica", "lag": "unknown"},
+				{"name": "n2", "host": "n2", "role": "replica", "lag": nil},
+				{"name": "n3", "host": "n3", "role": "replica", "lag": 4096},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := patroni.NewHTTPClient(srv.URL)
+	cluster, err := c.GetCluster(context.Background())
+	require.NoError(t, err)
+	require.Len(t, cluster.Members, 4)
+	assert.Equal(t, "n0", cluster.Leader().Name)
+	assert.Equal(t, int64(4096), int64(cluster.Members[3].Lag))
+}
+
 func TestGetCluster_NoLeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{

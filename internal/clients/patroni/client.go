@@ -21,13 +21,39 @@ type ClusterInfo struct {
 }
 
 type Member struct {
-	Name   string `json:"name"`
-	Host   string `json:"host"`
-	Port   int    `json:"port"`
-	Role   string `json:"role"`
-	State  string `json:"state"`
-	APIURL string `json:"api_url"`
-	Lag    int64  `json:"lag"`
+	Name   string   `json:"name"`
+	Host   string   `json:"host"`
+	Port   int      `json:"port"`
+	Role   string   `json:"role"`
+	State  string   `json:"state"`
+	APIURL string   `json:"api_url"`
+	Lag    LagBytes `json:"lag"`
+}
+
+// LagBytes is a member's replication lag in bytes. Patroni reports it as an
+// integer, the string "unknown" when it cannot be determined, or null — so a
+// plain int64 fails to decode. Non-numeric values decode to LagUnknown.
+type LagBytes int64
+
+// LagUnknown is the sentinel for a member whose lag Patroni could not report.
+const LagUnknown LagBytes = -1
+
+func (l *LagBytes) UnmarshalJSON(data []byte) error {
+	s := string(data)
+	switch {
+	case s == "null":
+		*l = LagUnknown
+		return nil
+	case len(s) > 0 && s[0] == '"': // a string such as "unknown"
+		*l = LagUnknown
+		return nil
+	}
+	var n int64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*l = LagBytes(n)
+	return nil
 }
 
 // Leader returns the primary member, or nil if there is no leader.
