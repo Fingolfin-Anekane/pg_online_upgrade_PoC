@@ -45,7 +45,12 @@ func (s *startPG17) Check(ctx context.Context) (bool, error) {
 	return true, nil
 }
 func (s *startPG17) Run(ctx context.Context) error {
-	return s.d.Tools.Start(ctx, s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewDataDir)
+	s.d.logf("стартую PG17 на N1 (bindir=%s datadir=%s)...", s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewDataDir)
+	if err := s.d.Tools.Start(ctx, s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewDataDir); err != nil {
+		return err
+	}
+	s.d.logf("PG17 запущен")
+	return nil
 }
 
 // --- CreateForwardSubscription (PG17 subscribes to old primary's publication) ---
@@ -73,8 +78,14 @@ func (s *createForwardSubscription) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return pg17.CreateSubscription(ctx,
-		s.d.Cfg.Upgrade.SubscriptionName, primaryDSN, s.d.Cfg.Upgrade.PublicationName, s.d.Cfg.Upgrade.SlotName)
+	s.d.logf("создаю прямую подписку %q на PG17 (publication=%q, переиспользую слит. слот %q, create_slot=false)...",
+		s.d.Cfg.Upgrade.SubscriptionName, s.d.Cfg.Upgrade.PublicationName, s.d.Cfg.Upgrade.SlotName)
+	if err := pg17.CreateSubscription(ctx,
+		s.d.Cfg.Upgrade.SubscriptionName, primaryDSN, s.d.Cfg.Upgrade.PublicationName, s.d.Cfg.Upgrade.SlotName); err != nil {
+		return err
+	}
+	s.d.logf("подписка %q создана — пошёл догон хвоста изменений", s.d.Cfg.Upgrade.SubscriptionName)
+	return nil
 }
 
 // --- WaitLagZero ---
@@ -84,6 +95,7 @@ type waitLagZero struct{ d Deps }
 func (s *waitLagZero) ID() runner.StepID                       { return "WaitLagZero" }
 func (s *waitLagZero) Check(ctx context.Context) (bool, error) { return s.zero(ctx) }
 func (s *waitLagZero) Run(ctx context.Context) error {
+	s.d.logf("проверяю лаг прямой подписки %q (нужен write=flush=replay=0)...", s.d.Cfg.Upgrade.SubscriptionName)
 	zero, err := s.zero(ctx)
 	if err != nil {
 		return err
@@ -91,6 +103,7 @@ func (s *waitLagZero) Run(ctx context.Context) error {
 	if !zero {
 		return fmt.Errorf("catchup: subscription lag not yet zero; re-run pg-upgrade to retry")
 	}
+	s.d.logf("лаг нулевой — PG17 догнал старый primary")
 	return nil
 }
 func (s *waitLagZero) zero(ctx context.Context) (bool, error) {
@@ -115,6 +128,7 @@ type verifyNewClusterHealthy struct{ d Deps }
 func (s *verifyNewClusterHealthy) ID() runner.StepID                   { return "VerifyNewClusterHealthy" }
 func (s *verifyNewClusterHealthy) Check(context.Context) (bool, error) { return false, nil } // always verify
 func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
+	s.d.logf("проверяю здоровье нового кластера через Patroni (лидер + хотя бы одна реплика)...")
 	cluster, err := s.d.NewPatroni.GetCluster(ctx)
 	if err != nil {
 		return err
@@ -131,6 +145,7 @@ func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
 	if standbys < 1 {
 		return fmt.Errorf("catchup: new Patroni cluster has no standby yet (add a replica, then re-run)")
 	}
+	s.d.logf("новый кластер здоров: есть лидер и реплик=%d", standbys)
 	return nil
 }
 

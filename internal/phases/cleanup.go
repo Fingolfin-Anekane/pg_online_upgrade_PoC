@@ -42,7 +42,12 @@ func (s *archivePgUpgradeLogs) Check(context.Context) (bool, error) {
 	return false, nil
 }
 func (s *archivePgUpgradeLogs) Run(context.Context) error {
-	return copyTree(s.d.Cfg.Upgrade.PgUpgradeLogDir, s.d.Cfg.Upgrade.LogArchiveDir)
+	s.d.logf("архивирую логи pg_upgrade: %s -> %s...", s.d.Cfg.Upgrade.PgUpgradeLogDir, s.d.Cfg.Upgrade.LogArchiveDir)
+	if err := copyTree(s.d.Cfg.Upgrade.PgUpgradeLogDir, s.d.Cfg.Upgrade.LogArchiveDir); err != nil {
+		return err
+	}
+	s.d.logf("логи pg_upgrade заархивированы в %s", s.d.Cfg.Upgrade.LogArchiveDir)
+	return nil
 }
 
 // --- VerifyOldPrimaryStopped (operator stops the remote old primary; binary confirms it is down) ---
@@ -52,6 +57,7 @@ type verifyOldPrimaryStopped struct{ d Deps }
 func (s *verifyOldPrimaryStopped) ID() runner.StepID                   { return "VerifyOldPrimaryStopped" }
 func (s *verifyOldPrimaryStopped) Check(context.Context) (bool, error) { return false, nil } // always verify
 func (s *verifyOldPrimaryStopped) Run(ctx context.Context) error {
+	s.d.logf("проверяю, что старый primary остановлен оператором (запрос должен не пройти)...")
 	old, err := s.d.Primary(ctx)
 	if err != nil {
 		// A provider error is a config problem (the pool is built lazily, so it
@@ -69,6 +75,7 @@ func (s *verifyOldPrimaryStopped) Run(ctx context.Context) error {
 	if _, err := old.IsInRecovery(ctx); err == nil {
 		return fmt.Errorf("cleanup: old primary still reachable; stop it, then re-run")
 	}
+	s.d.logf("старый primary недоступен — остановлен, как и ожидалось")
 	return nil // query failed -> old primary is down (expected)
 }
 

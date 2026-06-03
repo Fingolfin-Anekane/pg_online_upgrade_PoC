@@ -43,7 +43,14 @@ func (s *pausePatroni) Check(ctx context.Context) (bool, error) {
 	}
 	return c.Paused, nil
 }
-func (s *pausePatroni) Run(ctx context.Context) error { return s.d.Patroni.Pause(ctx) }
+func (s *pausePatroni) Run(ctx context.Context) error {
+	s.d.logf("ставлю Patroni на паузу (отключаю автоматический failover)...")
+	if err := s.d.Patroni.Pause(ctx); err != nil {
+		return err
+	}
+	s.d.logf("Patroni на паузе")
+	return nil
+}
 
 // --- CaptureReceivedLSN (must run before disconnect; receiver goes empty after) ---
 
@@ -54,6 +61,7 @@ func (s *captureReceivedLSN) Check(context.Context) (bool, error) {
 	return s.d.Mgr.Get().Artifacts.ReceivedLSN != "", nil
 }
 func (s *captureReceivedLSN) Run(ctx context.Context) error {
+	s.d.logf("фиксирую received_lsn WAL-приёмника N1 (до отключения от WAL)...")
 	lsn, err := s.d.N1.GetWALReceiverReceivedLSN(ctx)
 	if err != nil {
 		return err
@@ -61,6 +69,7 @@ func (s *captureReceivedLSN) Run(ctx context.Context) error {
 	if lsn == "" {
 		return fmt.Errorf("isolate: wal receiver already empty; cannot capture received_lsn")
 	}
+	s.d.logf("received_lsn=%s зафиксирован", lsn)
 	return s.d.Mgr.SetReceivedLSN(lsn)
 }
 
@@ -83,20 +92,35 @@ func (s *disconnectN1) Run(ctx context.Context) error {
 	switch {
 	case v >= 130000:
 		// PG13+: primary_conninfo is reloadable (PGC_SIGHUP).
-		return s.d.N1.DisconnectFromWAL(ctx)
+		s.d.logf("PG%d: очищаю primary_conninfo через ALTER SYSTEM + reload (без рестарта)...", v/10000)
+		if err := s.d.N1.DisconnectFromWAL(ctx); err != nil {
+			return err
+		}
+		s.d.logf("N1 отключён от WAL")
+		return nil
 	case v >= 120000:
 		// PG12: GUC but PGC_POSTMASTER -> clear via ALTER SYSTEM, then restart.
+		s.d.logf("PG12: очищаю primary_conninfo (ALTER SYSTEM) и рестартую N1...")
 		if err := s.d.N1.ClearPrimaryConninfo(ctx); err != nil {
 			return err
 		}
-		return s.d.Tools.Restart(ctx, s.d.Cfg.Upgrade.DataDir)
+		if err := s.d.Tools.Restart(ctx, s.d.Cfg.Upgrade.DataDir); err != nil {
+			return err
+		}
+		s.d.logf("N1 отключён от WAL (после рестарта)")
+		return nil
 	default:
 		// PG10/11: primary_conninfo lives in recovery.conf (not a GUC); edit the
 		// file (keep standby_mode) and restart.
+		s.d.logf("PG%d: удаляю primary_conninfo из recovery.conf и рестартую N1...", v/10000)
 		if err := removePrimaryConninfoFromRecoveryConf(s.d.Cfg.Upgrade.DataDir); err != nil {
 			return err
 		}
-		return s.d.Tools.Restart(ctx, s.d.Cfg.Upgrade.DataDir)
+		if err := s.d.Tools.Restart(ctx, s.d.Cfg.Upgrade.DataDir); err != nil {
+			return err
+		}
+		s.d.logf("N1 отключён от WAL (после рестарта)")
+		return nil
 	}
 }
 
@@ -142,6 +166,7 @@ func (s *waitReplayComplete) Check(ctx context.Context) (bool, error) {
 	return s.replayCaughtUp(ctx)
 }
 func (s *waitReplayComplete) Run(ctx context.Context) error {
+	s.d.logf("проверяю, что N1 доиграл WAL до received_lsn=%s...", s.d.Mgr.Get().Artifacts.ReceivedLSN)
 	caught, err := s.replayCaughtUp(ctx)
 	if err != nil {
 		return err
@@ -149,6 +174,7 @@ func (s *waitReplayComplete) Run(ctx context.Context) error {
 	if !caught {
 		return fmt.Errorf("isolate: replay has not reached received_lsn yet; re-run pg-upgrade to retry")
 	}
+	s.d.logf("replay_lsn >= received_lsn — N1 доиграл весь принятый WAL")
 	return nil
 }
 func (s *waitReplayComplete) replayCaughtUp(ctx context.Context) (bool, error) {
@@ -183,6 +209,7 @@ func (s *recordTargetLSN) Check(context.Context) (bool, error) {
 	return s.d.Mgr.Get().Artifacts.TargetLSN != "", nil
 }
 func (s *recordTargetLSN) Run(ctx context.Context) error {
+	s.d.logf("записываю target_lsn (физическая граница, на которой замёрз N1)...")
 	target, err := s.d.N1.GetLastWALReplayLSN(ctx)
 	if err != nil {
 		return err
@@ -193,6 +220,7 @@ func (s *recordTargetLSN) Run(ctx context.Context) error {
 	if err := s.d.Mgr.SetTargetLSN(target); err != nil {
 		return err
 	}
+	s.d.logf("target_lsn=%s записан; проверяю инвариант confirmed_flush_lsn <= target_lsn...", target)
 	// Invariant: SlotBaseline.ConfirmedFlushLSN <= target_lsn, else changes
 	// between baseline and target would be lost.
 	bl := s.d.Mgr.Get().Artifacts.SlotBaseline

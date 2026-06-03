@@ -46,6 +46,7 @@ func (s *runSlotDrain) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.d.logf("сливаю слот %q до target_lsn=%s (потребляю изменения через pgoutput)...", s.d.Cfg.Upgrade.SlotName, target)
 	report, err := s.d.Drain(ctx, slotdrain.Config{
 		ConnString: connStr,
 		SlotName:   s.d.Cfg.Upgrade.SlotName,
@@ -55,6 +56,7 @@ func (s *runSlotDrain) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.d.logf("слот слит: транзакций=%d, confirmed_flush_lsn=%s", report.TransactionsDrained, report.FinalFlushLSN)
 	return s.d.Mgr.SetDrainReport(&state.DrainReport{
 		CompletedAt:         report.CompletedAt,
 		FinalFlushLSN:       report.FinalFlushLSN,
@@ -69,6 +71,7 @@ type verifySlotDrained struct{ d Deps }
 func (s *verifySlotDrained) ID() runner.StepID                   { return "VerifySlotDrained" }
 func (s *verifySlotDrained) Check(context.Context) (bool, error) { return false, nil } // always verify
 func (s *verifySlotDrained) Run(ctx context.Context) error {
+	s.d.logf("проверяю, что confirmed_flush_lsn слота совпал с итогом слива...")
 	report := s.d.Mgr.Get().Artifacts.DrainReport
 	if report == nil {
 		return fmt.Errorf("drain: no drain report to verify")
@@ -95,6 +98,7 @@ func (s *verifySlotDrained) Run(ctx context.Context) error {
 	if flushLSN != expectedLSN {
 		return fmt.Errorf("drain: confirmed_flush_lsn %s != drained final %s", slot.ConfirmedFlushLSN, report.FinalFlushLSN)
 	}
+	s.d.logf("слот корректно слит: confirmed_flush_lsn=%s", slot.ConfirmedFlushLSN)
 	return nil
 }
 
