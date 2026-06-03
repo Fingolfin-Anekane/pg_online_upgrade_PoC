@@ -54,8 +54,12 @@ upgrade:
 
   # --- new cluster endpoints ---------------------------------------------
   # Superuser DSN to the new PG17 cluster (Catchup/Switchover/Finalize talk to
-  # it). dbname in the DSN must match `dbname` below. [run]
-  pg17_dsn: "host=pg17-vip port=5432 user=postgres dbname=appdb sslmode=require"
+  # it). dbname in the DSN must match `dbname` below. This DSN is also embedded
+  # into the reverse subscription on the old primary. NOTE: during catchup PG17
+  # is freshly initdb'd with ssl=off, so sslmode=require fails with "server
+  # refused TLS connection" until you configure SSL on the new cluster; use
+  # sslmode=prefer (try TLS, fall back to plaintext) unless SSL is set up. [run]
+  pg17_dsn: "host=pg17-vip port=5432 user=postgres dbname=appdb sslmode=prefer"
   # Patroni REST API base URL of the NEW cluster (leader/health checks). [run]
   new_patroni_url: "http://pg17-node-1:8008"
 
