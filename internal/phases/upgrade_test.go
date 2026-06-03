@@ -11,6 +11,7 @@ import (
 	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
 	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
+	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,10 +37,14 @@ type fakeTools struct {
 	newDataDir     string // which dataDir counts as "new" in IsRunning
 	patroniStarted string // command passed to StartPatroni
 	patroniStopped string // command passed to StopPatroni
+	oldControlErr  error  // error returned by OldControlData (e.g. pg_control gone)
 	onPromote      func()
 }
 
 func (f *fakeTools) OldControlData(context.Context, string) (*pgbin.ControlData, error) {
+	if f.oldControlErr != nil {
+		return nil, f.oldControlErr
+	}
 	return &pgbin.ControlData{State: f.oldState}, nil
 }
 func (f *fakeTools) NewControlData(context.Context, string) (*pgbin.ControlData, error) {
@@ -135,6 +140,31 @@ func TestUpgradeHappyPath(t *testing.T) {
 	assert.Equal(t, 2, n1.checkpoints)
 	assert.True(t, mgr.Get().Artifacts.PgUpgradeDone)
 	assert.Equal(t, "7361852939023499998", mgr.Get().Artifacts.PG17SYSID)
+}
+
+// After pg_upgrade --link, pg_upgrade renames the old cluster's global/pg_control
+// to .old, so OldControlData errors. If a checkpoint decline leaves Current at
+// "upgrade", a re-run re-enters the phase: the pre-pg_upgrade steps must report
+// done from the PgUpgradeDone artifact instead of re-reading the gone control
+// file (which would crash PromoteN1.Check / ShutdownN1Clean.Check on resume).
+func TestUpgradeStepsIdempotentAfterPgUpgrade(t *testing.T) {
+	mgr := testMgr(t)
+	for _, p := range []string{"isolate", "drain", "upgrade"} {
+		require.NoError(t, mgr.Advance(p))
+	}
+	require.NoError(t, mgr.SetPgUpgradeDone("7647249498122789500"))
+	tools := &fakeTools{oldControlErr: errors.New(
+		`pg_controldata: could not open file "/data/postgresql/global/pg_control": No such file or directory`)}
+	d := Deps{
+		Cfg: config.Config{Upgrade: config.UpgradeConfig{DataDir: "/data/postgresql"}},
+		Mgr: mgr, Tools: tools,
+		Patroni: &fakePatroni{cluster: &patroni.ClusterInfo{}}, // reachable, must be ignored
+	}
+	for _, st := range []runner.Step{&promoteN1{d}, &shutdownN1Clean{d}, &stopOldPatroni{d}} {
+		done, err := st.Check(context.Background())
+		require.NoErrorf(t, err, "%s.Check must not re-read the old control file after pg_upgrade", st.ID())
+		assert.Truef(t, done, "%s must report done from PgUpgradeDone after pg_upgrade", st.ID())
+	}
 }
 
 func TestStopOldPatroni_FailsWhileReachable(t *testing.T) {

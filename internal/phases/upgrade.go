@@ -38,6 +38,15 @@ func (d Deps) upgradeOpts() pgbin.UpgradeOptions {
 	}
 }
 
+// upgradeDone reports whether pg_upgrade has already completed (the point of no
+// return). Past it the old cluster is gone — pg_upgrade renames its
+// global/pg_control to global/pg_control.old so the old server can't be started
+// over the --link'd files — so the pre-pg_upgrade steps that read the old control
+// file must NOT re-read it on resume. If a checkpoint decline leaves Current at
+// "upgrade", a re-run re-enters this phase; these steps report done from this
+// terminal artifact instead, letting the phase pass straight through to catchup.
+func (d Deps) upgradeDone() bool { return d.Mgr.Get().Artifacts.PgUpgradeDone }
+
 // checkUpgradePaths enforces pg_upgrade's requirement of distinct old/new dirs.
 func (d Deps) checkUpgradePaths() error {
 	if d.Cfg.Upgrade.NewDataDir == "" {
@@ -55,6 +64,9 @@ type promoteN1 struct{ d Deps }
 
 func (s *promoteN1) ID() runner.StepID { return "PromoteN1" }
 func (s *promoteN1) Check(ctx context.Context) (bool, error) {
+	if s.d.upgradeDone() {
+		return true, nil // pg_upgrade done: old control file is gone, phase is past this
+	}
 	// Read the control file rather than querying N1 live: it is authoritative and
 	// readable whether or not the server is running, so a resumed run works even
 	// after ShutdownN1Clean (a later step) has stopped N1.
@@ -119,8 +131,12 @@ func waitOutOfRecovery(ctx context.Context, n1 pg.Client, attempts int, interval
 // old Patroni REST after isolate.
 type stopOldPatroni struct{ d Deps }
 
-func (s *stopOldPatroni) ID() runner.StepID                   { return "StopOldPatroniOnN1" }
-func (s *stopOldPatroni) Check(context.Context) (bool, error) { return false, nil } // always verify
+func (s *stopOldPatroni) ID() runner.StepID { return "StopOldPatroniOnN1" }
+func (s *stopOldPatroni) Check(context.Context) (bool, error) {
+	// Re-verify on every run UNTIL pg_upgrade has completed; past that point the
+	// link is done and re-stopping/re-checking the old Patroni is moot.
+	return s.d.upgradeDone(), nil
+}
 func (s *stopOldPatroni) Run(ctx context.Context) error {
 	if cmd := s.d.Cfg.Upgrade.OldPatroniStopCommand; cmd != "" {
 		s.d.logf("останавливаю старый Patroni на N1: %q...", cmd)
@@ -144,6 +160,9 @@ type shutdownN1Clean struct{ d Deps }
 
 func (s *shutdownN1Clean) ID() runner.StepID { return "ShutdownN1Clean" }
 func (s *shutdownN1Clean) Check(ctx context.Context) (bool, error) {
+	if s.d.upgradeDone() {
+		return true, nil // pg_upgrade done: old control file is gone, phase is past this
+	}
 	cd, err := s.d.Tools.OldControlData(ctx, s.d.Cfg.Upgrade.DataDir)
 	if err != nil {
 		return false, err
