@@ -100,3 +100,20 @@ func TestPatchPatroniConfig_ReplacesNonMappingPostgresql(t *testing.T) {
 	assert.Equal(t, "/data/pg17", data)
 	assert.Equal(t, "/b17", bin)
 }
+
+func TestParsePatroniManagedDirs(t *testing.T) {
+	in := "scope: prod-17\npostgresql:\n  data_dir: /data/pg17\n  bin_dir: /b17\n  config_dir: /c17\n"
+	p, err := parsePatroniManagedFields([]byte(in))
+	require.NoError(t, err)
+	assert.Equal(t, "prod-17", p.Scope)
+	assert.Equal(t, "/data/pg17", p.DataDir)
+	assert.Equal(t, "/b17", p.BinDir)
+	assert.Equal(t, "/c17", p.ConfigDir)
+}
+
+func TestParsePatroniManagedDirs_MissingFieldsAreEmpty(t *testing.T) {
+	p, err := parsePatroniManagedFields([]byte("scope: prod-17\npostgresql:\n  data_dir: /data/pg17\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "", p.BinDir)
+	assert.Equal(t, "", p.ConfigDir)
+}

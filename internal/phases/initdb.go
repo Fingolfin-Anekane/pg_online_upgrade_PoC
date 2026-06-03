@@ -68,6 +68,37 @@ func parsePatroniScopeDataDir(patroniYAML []byte) (scope, dataDir string, err er
 	return doc.Scope, doc.Postgresql.DataDir, nil
 }
 
+// patroniManagedFields are the patroni.yml fields PatchNewPatroniConfig manages.
+type patroniManagedFields struct {
+	Scope     string
+	DataDir   string
+	BinDir    string
+	ConfigDir string
+}
+
+// parsePatroniManagedFields reads scope and postgresql.{data_dir,bin_dir,
+// config_dir} from a Patroni config. Any field may be empty if unset in the
+// file (e.g. provided via environment instead); callers must tolerate that.
+func parsePatroniManagedFields(patroniYAML []byte) (patroniManagedFields, error) {
+	var doc struct {
+		Scope      string `yaml:"scope"`
+		Postgresql struct {
+			DataDir   string `yaml:"data_dir"`
+			BinDir    string `yaml:"bin_dir"`
+			ConfigDir string `yaml:"config_dir"`
+		} `yaml:"postgresql"`
+	}
+	if err := yaml.Unmarshal(patroniYAML, &doc); err != nil {
+		return patroniManagedFields{}, fmt.Errorf("catchup: parse patroni config: %w", err)
+	}
+	return patroniManagedFields{
+		Scope:     doc.Scope,
+		DataDir:   doc.Postgresql.DataDir,
+		BinDir:    doc.Postgresql.BinDir,
+		ConfigDir: doc.Postgresql.ConfigDir,
+	}, nil
+}
+
 // parseInitdbOptions turns a Patroni config's bootstrap.initdb list into initdb
 // command-line flags. Patroni encodes each entry either as a bare string (a flag
 // like "data-checksums") or a single-key mapping (an option like "encoding: UTF8").
