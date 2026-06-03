@@ -8,9 +8,16 @@ import (
 )
 
 // NewSwitchover builds Phase 6: the critical section. Freeze the old primary,
-// drain the final lag, sync sequences, set up reverse replication, signal the
-// DSN swap, verify traffic moved, and disable the forward subscription.
-// Transitions to "finalize" (Plan 4).
+// drain the final lag, sync sequences, signal the DSN swap, verify traffic
+// moved, and disable the forward subscription. Transitions to "finalize"
+// (Plan 4).
+//
+// Reverse replication (PG17 -> old primary, rollback insurance) is currently
+// omitted: it created a bidirectional setup that loops (a write on PG17 flows
+// back to the old primary and is re-captured by the forward publication, which
+// origin=none can't break on the PG13 subscriber), and its slot creation hangs
+// on an idle PG17. Finalize's DropReverseReplication stays (DROP ... IF EXISTS),
+// so any leftover reverse artifacts are still cleaned up.
 func NewSwitchover(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "switchover",
@@ -18,7 +25,6 @@ func NewSwitchover(d Deps) runner.Phase {
 			&freezeOldPrimary{d},
 			&waitFinalLagZero{d},
 			&syncSequences{d},
-			&setupReverseReplication{d},
 			&notifyDSNSwap{d},
 			&verifyTrafficOnNew{d},
 			&disableForwardSubscription{d},
@@ -118,39 +124,6 @@ func (s *syncSequences) Run(ctx context.Context) error {
 	return s.d.Mgr.SetSequencesSynced()
 }
 
-// --- SetupReverseReplication (PG17 publishes; old primary subscribes back) ---
-
-type setupReverseReplication struct{ d Deps }
-
-func (s *setupReverseReplication) ID() runner.StepID { return "SetupReverseReplication" }
-func (s *setupReverseReplication) Check(context.Context) (bool, error) {
-	return s.d.Mgr.Get().Artifacts.ReverseReplSetUp, nil
-}
-func (s *setupReverseReplication) Run(ctx context.Context) error {
-	pg17, err := s.d.PG17(ctx)
-	if err != nil {
-		return err
-	}
-	old, err := s.d.Primary(ctx)
-	if err != nil {
-		return err
-	}
-	// Publication on the new primary.
-	s.d.logf("настраиваю обратную репликацию (страховка отката): публикация %q на PG17...", s.d.Cfg.Upgrade.ReversePubName)
-	if err := pg17.CreatePublication(ctx, s.d.Cfg.Upgrade.ReversePubName); err != nil {
-		return err
-	}
-	// Subscription on the old primary, pointing back at PG17 (creates its own slot
-	// on PG17). The old primary's apply worker runs as session_replication_role
-	// 'replica', so the DML freeze triggers do not fire for it.
-	s.d.logf("создаю обратную подписку %q на старом primary (слот создаётся на PG17)...", s.d.Cfg.Upgrade.ReverseSubName)
-	if err := old.CreateSubscriptionCreatingSlot(ctx, s.d.Cfg.Upgrade.ReverseSubName, s.d.Cfg.Upgrade.PG17DSN, s.d.Cfg.Upgrade.ReversePubName); err != nil {
-		return err
-	}
-	s.d.logf("обратная репликация поднята (PG17 -> старый primary)")
-	return s.d.Mgr.SetReverseReplSetUp()
-}
-
 // --- NotifyDSNSwap (signal external tooling; operator confirms via checkpoint) ---
 
 type notifyDSNSwap struct{ d Deps }
@@ -217,7 +190,6 @@ var (
 	_ runner.Step = (*freezeOldPrimary)(nil)
 	_ runner.Step = (*waitFinalLagZero)(nil)
 	_ runner.Step = (*syncSequences)(nil)
-	_ runner.Step = (*setupReverseReplication)(nil)
 	_ runner.Step = (*notifyDSNSwap)(nil)
 	_ runner.Step = (*verifyTrafficOnNew)(nil)
 	_ runner.Step = (*disableForwardSubscription)(nil)

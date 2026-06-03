@@ -102,7 +102,7 @@ func (f *fakePG) DisableSubscription(_ context.Context, name string) error {
 }
 func (f *fakePG) CountAppBackends(context.Context) (int, error) { return f.appBackends, nil }
 
-func TestSwitchoverReverseSignalDisable(t *testing.T) {
+func TestSwitchoverSignalAndDisable(t *testing.T) {
 	pg17 := &fakePG{subLag: &pg.SubscriptionLag{}, appBackends: 5}
 	oldPrimary := &fakePG{}
 	d := switchoverDeps(t, pg17, oldPrimary)
@@ -110,29 +110,17 @@ func TestSwitchoverReverseSignalDisable(t *testing.T) {
 	d.WriteSignal = func(path string, _ []byte) error { signalled = path; return nil }
 
 	steps := NewSwitchover(d).Steps()
-	require.Len(t, steps, 7)
-	for _, s := range steps[3:] { // reverse, notify, verify-traffic, disable-forward
+	require.Len(t, steps, 6)      // no reverse-replication step
+	for _, s := range steps[3:] { // notify, verify-traffic, disable-forward
 		done, err := s.Check(context.Background())
 		require.NoError(t, err)
 		if !done {
 			require.NoError(t, s.Run(context.Background()))
 		}
 	}
-	assert.Equal(t, "pub_rb", pg17.createdPub)          // reverse publication on PG17
-	assert.Equal(t, "sub_rb", oldPrimary.createdRevSub) // reverse subscription on old primary
 	assert.Equal(t, "/run/sig.json", signalled)
 	assert.True(t, d.Mgr.Get().Artifacts.DSNSwapNotified)
 	assert.Equal(t, "sub_up", pg17.disabledSub)
-}
-
-func TestSetupReverseReplicationSkipsWhenDone(t *testing.T) {
-	pg17 := &fakePG{}
-	d := switchoverDeps(t, pg17, &fakePG{})
-	require.NoError(t, d.Mgr.SetReverseReplSetUp())
-	done, err := (&setupReverseReplication{d}).Check(context.Background())
-	require.NoError(t, err)
-	assert.True(t, done)
-	assert.Equal(t, "", pg17.createdPub) // create skipped on resume
 }
 
 func TestVerifyTrafficOnNewErrorsWhenNoBackends(t *testing.T) {
