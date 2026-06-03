@@ -3,6 +3,8 @@ package phases
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,4 +31,14 @@ func TestDSNSwapSignalWriteError(t *testing.T) {
 	writeErr := errors.New("disk full")
 	err := WriteDSNSwapSignal(func(_ string, _ []byte) error { return writeErr }, "/p", "dsn", "cl")
 	require.ErrorIs(t, err, writeErr)
+}
+
+func TestDefaultWriteSignalCreatesParentDir(t *testing.T) {
+	// The configured path often lives under a dir that does not exist yet
+	// (e.g. /var/run/pg-upgrade on tmpfs). DefaultWriteSignal must create it.
+	path := filepath.Join(t.TempDir(), "pg-upgrade", "dsn-swap.json")
+	require.NoError(t, DefaultWriteSignal(path, []byte(`{"action":"swap-dsn"}`)))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, `{"action":"swap-dsn"}`, string(got))
 }

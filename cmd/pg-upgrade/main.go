@@ -192,7 +192,7 @@ func runCmd(cfgPath *string) *cobra.Command {
 				Drain:       slotdrain.Drain,
 				PG17:        pg17Provider,
 				NewPatroni:  newPat,
-				WriteSignal: func(path string, data []byte) error { return os.WriteFile(path, data, 0o644) },
+				WriteSignal: phases.DefaultWriteSignal,
 			}
 
 			mode := runner.Interactive

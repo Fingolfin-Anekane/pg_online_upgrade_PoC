@@ -3,8 +3,20 @@ package phases
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
+
+// DefaultWriteSignal is the production signal writer: it creates the file's
+// parent directory if missing (the configured path commonly lives under
+// /var/run/pg-upgrade, a tmpfs subdir that may not exist) and writes the file.
+func DefaultWriteSignal(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("signal: create dir for %s: %w", path, err)
+	}
+	return os.WriteFile(path, data, 0o644)
+}
 
 // DSNSwapSignal is the payload the binary writes for external tooling to perform
 // the client DSN swap from the old primary to the new PG17 cluster.
