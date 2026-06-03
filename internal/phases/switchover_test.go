@@ -69,7 +69,7 @@ func TestSwitchoverFreezeAndSyncSequences(t *testing.T) {
 
 func TestWaitFinalLagZeroErrorsWhenBehind(t *testing.T) {
 	// lag is reported by the publisher (old primary), not PG17
-	d := switchoverDeps(t, &fakePG{}, &fakePG{subLag: &pg.SubscriptionLag{FlushLagMs: 250}})
+	d := switchoverDeps(t, &fakePG{}, &fakePG{subLag: &pg.SubscriptionLag{ByteLag: 250}})
 	step := &waitFinalLagZero{d}
 	done, err := step.Check(context.Background())
 	require.NoError(t, err)

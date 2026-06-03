@@ -52,6 +52,13 @@ type SubscriptionLag struct {
 	WriteLagMs  int64
 	FlushLagMs  int64
 	ReplayLagMs int64
+	// ByteLag is how far the subscriber is behind the publisher's current WAL, in
+	// bytes (pg_current_wal_lsn() - replay_lsn). Unlike the time-based *LagMs
+	// columns — which keep sampling small non-zero values whenever background WAL
+	// (autovacuum/checkpoints) advances the LSN, even with no app writes — ByteLag
+	// settles to 0 once the subscriber has replayed up to the publisher's WAL. It
+	// is the stable criterion for "fully caught up" at the cutover point.
+	ByteLag int64
 }
 
 type SequenceInfo struct {
@@ -290,9 +297,10 @@ func (c *internalClient) GetSubscriptionLag(ctx context.Context, name string) (*
 	err := c.q.QueryRow(ctx,
 		"SELECT COALESCE(EXTRACT(EPOCH FROM write_lag)*1000, 0)::bigint, "+
 			"COALESCE(EXTRACT(EPOCH FROM flush_lag)*1000, 0)::bigint, "+
-			"COALESCE(EXTRACT(EPOCH FROM replay_lag)*1000, 0)::bigint "+
+			"COALESCE(EXTRACT(EPOCH FROM replay_lag)*1000, 0)::bigint, "+
+			"COALESCE(pg_current_wal_lsn() - replay_lsn, 0)::bigint "+
 			"FROM pg_stat_replication WHERE application_name = $1", name).
-		Scan(&lag.WriteLagMs, &lag.FlushLagMs, &lag.ReplayLagMs)
+		Scan(&lag.WriteLagMs, &lag.FlushLagMs, &lag.ReplayLagMs, &lag.ByteLag)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

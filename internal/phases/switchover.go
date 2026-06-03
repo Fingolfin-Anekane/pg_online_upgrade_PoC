@@ -53,7 +53,7 @@ type waitFinalLagZero struct{ d Deps }
 func (s *waitFinalLagZero) ID() runner.StepID                       { return "WaitFinalLagZero" }
 func (s *waitFinalLagZero) Check(ctx context.Context) (bool, error) { return s.zero(ctx) }
 func (s *waitFinalLagZero) Run(ctx context.Context) error {
-	s.d.logf("жду нулевого финального лага после заморозки (последние изменения доехали на PG17)...")
+	s.d.logf("жду нулевого финального лага после заморозки (bytes_behind=0 на PG17)...")
 	zero, err := s.zero(ctx)
 	if err != nil {
 		return err
@@ -77,7 +77,11 @@ func (s *waitFinalLagZero) zero(ctx context.Context) (bool, error) {
 	if lag == nil {
 		return false, fmt.Errorf("switchover: no walsender for subscription %s on the publisher", s.d.Cfg.Upgrade.SubscriptionName)
 	}
-	return lag.WriteLagMs == 0 && lag.FlushLagMs == 0 && lag.ReplayLagMs == 0, nil
+	// Byte (LSN) lag, not the time-based *LagMs columns: after the freeze,
+	// background WAL keeps the *_lag columns sampling small non-zero values, so
+	// they almost never read exactly zero; bytes_behind settles to 0 once the
+	// subscriber has replayed up to the publisher's WAL — the real cutover gate.
+	return lag.ByteLag == 0, nil
 }
 
 // --- SyncSequences (read from frozen old primary, set on PG17 with a buffer) ---

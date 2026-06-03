@@ -197,7 +197,7 @@ func TestVerifyNewClusterHealthyAcceptsSyncStandby(t *testing.T) {
 }
 
 func TestWaitLagZeroErrorsWhenBehind(t *testing.T) {
-	primary := &fakePG{subLag: &pg.SubscriptionLag{ReplayLagMs: 500}} // publisher reports lag
+	primary := &fakePG{subLag: &pg.SubscriptionLag{ByteLag: 500}} // publisher reports lag (bytes behind)
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SubscriptionName: "sub_up"}},
 		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
 	step := &waitLagZero{d}

@@ -207,7 +207,7 @@ type waitLagZero struct{ d Deps }
 func (s *waitLagZero) ID() runner.StepID                       { return "WaitLagZero" }
 func (s *waitLagZero) Check(ctx context.Context) (bool, error) { return s.zero(ctx) }
 func (s *waitLagZero) Run(ctx context.Context) error {
-	s.d.logf("проверяю лаг прямой подписки %q (нужен write=flush=replay=0)...", s.d.Cfg.Upgrade.SubscriptionName)
+	s.d.logf("проверяю лаг прямой подписки %q (нужно bytes_behind=0)...", s.d.Cfg.Upgrade.SubscriptionName)
 	zero, err := s.zero(ctx)
 	if err != nil {
 		return err
@@ -231,7 +231,10 @@ func (s *waitLagZero) zero(ctx context.Context) (bool, error) {
 	if lag == nil {
 		return false, fmt.Errorf("catchup: no walsender for subscription %s on the publisher yet", s.d.Cfg.Upgrade.SubscriptionName)
 	}
-	return lag.WriteLagMs == 0 && lag.FlushLagMs == 0 && lag.ReplayLagMs == 0, nil
+	// Use the byte (LSN) lag, not the time-based *LagMs columns: the latter keep
+	// sampling small non-zero values as background WAL advances the LSN, so they
+	// rarely read exactly zero even when fully caught up.
+	return lag.ByteLag == 0, nil
 }
 
 // --- VerifyNewClusterHealthy (delegated formation; binary verifies) ---
