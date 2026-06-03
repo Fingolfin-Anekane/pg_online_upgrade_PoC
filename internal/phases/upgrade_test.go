@@ -41,9 +41,14 @@ func (f *fakeTools) Promote(context.Context, string) error {
 		f.onPromote()
 	}
 	f.promoted = true
+	f.oldState = "in production" // promotion updates the control file
 	return nil
 }
-func (f *fakeTools) StopClean(context.Context, string) error { f.stopped = true; return nil }
+func (f *fakeTools) StopClean(context.Context, string) error {
+	f.stopped = true
+	f.oldState = "shut down" // a clean stop of the promoted primary
+	return nil
+}
 func (f *fakeTools) UpgradeCheck(context.Context, pgbin.UpgradeOptions) error {
 	f.checked = true
 	return nil
@@ -64,7 +69,7 @@ func TestUpgradeHappyPath(t *testing.T) {
 	cfgPath := filepath.Join(dir, "patroni.yml")
 	n1 := &fakePG{inRecovery: true} // must be in recovery so PromoteN1.Run is called
 	tools := &fakeTools{
-		oldState:  "in production", // promoted/running, not yet shut down at check time
+		oldState:  "in archive recovery", // running standby: PromoteN1 must run
 		sysID:     "7361852939023499998",
 		onPromote: func() { n1.inRecovery = false },
 	}
@@ -133,14 +138,33 @@ func TestUpgradeErrorsOnEmptySysID(t *testing.T) {
 }
 
 func TestUpgradeSkipsPromoteWhenAlreadyPrimary(t *testing.T) {
-	n1 := &fakePG{inRecovery: false} // already promoted
-	tools := &fakeTools{}
-	d := Deps{Mgr: testMgr(t), N1: n1, Tools: tools}
+	tools := &fakeTools{oldState: "in production"} // already promoted
+	d := Deps{Mgr: testMgr(t), Tools: tools}
 	step := &promoteN1{d}
 	done, err := step.Check(context.Background())
 	require.NoError(t, err)
 	assert.True(t, done) // skip promote
 	assert.False(t, tools.promoted)
+}
+
+// Resume after ShutdownN1Clean (a later step) has stopped N1: PromoteN1.Check
+// must report done from the control file, not fail trying to connect to a
+// server that is intentionally down.
+func TestUpgradeSkipsPromoteWhenShutDown(t *testing.T) {
+	tools := &fakeTools{oldState: "shut down"} // promoted then stopped earlier
+	d := Deps{Mgr: testMgr(t), Tools: tools}
+	done, err := (&promoteN1{d}).Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.False(t, tools.promoted)
+}
+
+func TestUpgradePromotesRunningStandby(t *testing.T) {
+	tools := &fakeTools{oldState: "in archive recovery"} // running standby
+	d := Deps{Mgr: testMgr(t), Tools: tools}
+	done, err := (&promoteN1{d}).Check(context.Background())
+	require.NoError(t, err)
+	assert.False(t, done) // not promoted yet -> Run will promote
 }
 
 func TestPromoteConfirmsOutOfRecovery(t *testing.T) {

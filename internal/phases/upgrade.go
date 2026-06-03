@@ -55,11 +55,23 @@ type promoteN1 struct{ d Deps }
 
 func (s *promoteN1) ID() runner.StepID { return "PromoteN1" }
 func (s *promoteN1) Check(ctx context.Context) (bool, error) {
-	inRec, err := s.d.N1.IsInRecovery(ctx)
+	// Read the control file rather than querying N1 live: it is authoritative and
+	// readable whether or not the server is running, so a resumed run works even
+	// after ShutdownN1Clean (a later step) has stopped N1.
+	//   "in archive recovery"   -> running standby, promote it
+	//   "shut down in recovery"  -> stopped standby, not yet promoted
+	//   "in production"          -> already promoted (running)
+	//   "shut down"              -> promoted then cleanly stopped by a later step
+	cd, err := s.d.Tools.OldControlData(ctx, s.d.Cfg.Upgrade.DataDir)
 	if err != nil {
 		return false, err
 	}
-	return !inRec, nil // already promoted = done
+	switch cd.State {
+	case "in production", "shut down":
+		return true, nil // already promoted
+	default:
+		return false, nil
+	}
 }
 func (s *promoteN1) Run(ctx context.Context) error {
 	s.d.logf("промоутю N1 в primary (pg_ctl promote, datadir=%s)...", s.d.Cfg.Upgrade.DataDir)
