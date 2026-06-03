@@ -19,6 +19,7 @@ func NewUpgrade(d Deps) runner.Phase {
 		steps: []runner.Step{
 			&promoteN1{d},
 			&shutdownN1Clean{d},
+			&stopOldPatroni{d},
 			&initNewDataDir{d},
 			&runPgUpgradeCheck{d},
 			&runPgUpgrade{d},
@@ -106,6 +107,35 @@ func waitOutOfRecovery(ctx context.Context, n1 pg.Client, attempts int, interval
 		}
 	}
 	return fmt.Errorf("upgrade: promote did not complete within %s (still in recovery)", time.Duration(attempts)*interval)
+}
+
+// --- StopOldPatroni: take the old Patroni off N1 before pg_upgrade --link ---
+//
+// The dangerous agent is the OLD Patroni on N1: while it runs it can restart the
+// old postgres (a service restart resurrects it even when the cluster is paused),
+// and after pg_upgrade --link a running old server corrupts the new cluster's
+// hard-linked files. By this point ShutdownN1Clean has already stopped postgres,
+// so this is a safe spot to take Patroni off N1. The binary no longer needs the
+// old Patroni REST after isolate.
+type stopOldPatroni struct{ d Deps }
+
+func (s *stopOldPatroni) ID() runner.StepID                   { return "StopOldPatroniOnN1" }
+func (s *stopOldPatroni) Check(context.Context) (bool, error) { return false, nil } // always verify
+func (s *stopOldPatroni) Run(ctx context.Context) error {
+	if cmd := s.d.Cfg.Upgrade.OldPatroniStopCommand; cmd != "" {
+		s.d.logf("останавливаю старый Patroni на N1: %q...", cmd)
+		if err := s.d.Tools.StopPatroni(ctx, cmd); err != nil {
+			return err
+		}
+	}
+	// A reachable REST means the old Patroni still runs and could resurrect the
+	// old server. (A transient REST error is treated as "down" — acceptable: this
+	// is an operator-gated safety check, and the operator has stopped it.)
+	if _, err := s.d.Patroni.GetCluster(ctx); err == nil {
+		return fmt.Errorf("upgrade: the old Patroni on N1 is still reachable. It can resurrect the old server, and after pg_upgrade --link that corrupts the new cluster. Stop the old Patroni on this node now (postgres is already down for the upgrade), then re-run — or set upgrade.old_patroni_stop_command to have pg-upgrade stop it")
+	}
+	s.d.logf("старый Patroni на N1 недоступен — безопасно делать pg_upgrade")
+	return nil
 }
 
 // --- ShutdownN1Clean ---
@@ -197,6 +227,7 @@ func (s *runPgUpgrade) Run(ctx context.Context) error {
 var (
 	_ runner.Step = (*promoteN1)(nil)
 	_ runner.Step = (*shutdownN1Clean)(nil)
+	_ runner.Step = (*stopOldPatroni)(nil)
 	_ runner.Step = (*runPgUpgradeCheck)(nil)
 	_ runner.Step = (*runPgUpgrade)(nil)
 )

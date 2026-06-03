@@ -54,6 +54,14 @@ upgrade:
   # "systemctl start patroni". [optional]
   patroni_start_command: "systemctl start patroni"
 
+  # Command to stop the OLD Patroni on target_node, run before pg_upgrade. While
+  # the old Patroni runs it can restart the old server, and after pg_upgrade
+  # --link a running old server corrupts the new cluster. If empty, the upgrade
+  # step only VERIFIES the old Patroni is unreachable and fails otherwise (stop it
+  # manually) — leave empty where auto-stopping is risky, e.g. Patroni as PID 1 in
+  # a k8s pod shared with this binary. [optional]
+  old_patroni_stop_command: "systemctl stop patroni"
+
   # Path to the patroni.yml whose bootstrap.initdb options are passed to initdb
   # when creating new_data_dir, so the new PG17 cluster matches the old one's
   # encoding/locale/data-checksums (a mismatch fails pg_upgrade --check).

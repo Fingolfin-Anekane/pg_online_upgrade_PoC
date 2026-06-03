@@ -52,6 +52,13 @@ type UpgradeConfig struct {
 	// promptly (start the service in the background), e.g. "systemctl start
 	// patroni" — not run Patroni in the foreground. Defaults to DefaultPatroniStart.
 	PatroniStartCommand string `yaml:"patroni_start_command"`
+	// OldPatroniStopCommand, if set, is run before pg_upgrade to stop the OLD
+	// Patroni on N1. While it runs it can resurrect the old server, and after
+	// pg_upgrade --link a running old server corrupts the new cluster. If empty,
+	// the upgrade step only VERIFIES the old Patroni is unreachable and fails
+	// otherwise (so you can stop it manually) — useful where auto-stopping is
+	// risky (e.g. Patroni as PID 1 in a k8s pod shared with the orchestrator).
+	OldPatroniStopCommand string `yaml:"old_patroni_stop_command"`
 }
 
 type PGConfig struct {

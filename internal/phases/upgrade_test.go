@@ -2,11 +2,13 @@ package phases
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
 	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
 	"github.com/stretchr/testify/assert"
@@ -33,6 +35,7 @@ type fakeTools struct {
 	oldRunning     bool   // IsRunning for any other datadir (the old cluster)
 	newDataDir     string // which dataDir counts as "new" in IsRunning
 	patroniStarted string // command passed to StartPatroni
+	patroniStopped string // command passed to StopPatroni
 	onPromote      func()
 }
 
@@ -56,6 +59,10 @@ func (f *fakeTools) IsRunning(_ context.Context, _, dataDir string) (bool, error
 func (f *fakeTools) StartPatroni(_ context.Context, command string) error {
 	f.patroniStarted = command
 	f.running = true // Patroni brings PG17 up
+	return nil
+}
+func (f *fakeTools) StopPatroni(_ context.Context, command string) error {
+	f.patroniStopped = command
 	return nil
 }
 func (f *fakeTools) Promote(context.Context, string) error {
@@ -103,6 +110,8 @@ func TestUpgradeHappyPath(t *testing.T) {
 			PatroniInitdbConfig: initdbCfg,
 		}},
 		Mgr: mgr, N1: n1, Tools: tools,
+		// old Patroni already stopped -> GetCluster errors -> stopOldPatroni passes
+		Patroni: &fakePatroni{err: errors.New("connection refused")},
 	}
 
 	ph := NewUpgrade(d)
@@ -126,6 +135,29 @@ func TestUpgradeHappyPath(t *testing.T) {
 	assert.Equal(t, 2, n1.checkpoints)
 	assert.True(t, mgr.Get().Artifacts.PgUpgradeDone)
 	assert.Equal(t, "7361852939023499998", mgr.Get().Artifacts.PG17SYSID)
+}
+
+func TestStopOldPatroni_FailsWhileReachable(t *testing.T) {
+	// GetCluster succeeds -> old Patroni still up -> must fail before pg_upgrade
+	d := Deps{
+		Cfg:     config.Config{Upgrade: config.UpgradeConfig{}},
+		Tools:   &fakeTools{},
+		Patroni: &fakePatroni{cluster: &patroni.ClusterInfo{}},
+	}
+	err := (&stopOldPatroni{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still reachable")
+}
+
+func TestStopOldPatroni_RunsStopCommandThenVerifies(t *testing.T) {
+	tools := &fakeTools{}
+	d := Deps{
+		Cfg:     config.Config{Upgrade: config.UpgradeConfig{OldPatroniStopCommand: "systemctl stop patroni"}},
+		Tools:   tools,
+		Patroni: &fakePatroni{err: errors.New("connection refused")}, // down after stop
+	}
+	require.NoError(t, (&stopOldPatroni{d}).Run(context.Background()))
+	assert.Equal(t, "systemctl stop patroni", tools.patroniStopped)
 }
 
 func TestUpgradeRejectsSameDataDirs(t *testing.T) {

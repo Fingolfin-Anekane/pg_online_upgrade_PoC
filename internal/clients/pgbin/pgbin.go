@@ -47,6 +47,8 @@ type PGTools interface {
 	IsRunning(ctx context.Context, bindir, dataDir string) (bool, error)
 	// StartPatroni runs the operator's command to bring up Patroni on this node.
 	StartPatroni(ctx context.Context, command string) error
+	// StopPatroni runs the operator's command to stop Patroni on this node.
+	StopPatroni(ctx context.Context, command string) error
 	Promote(ctx context.Context, dataDir string) error
 	StopClean(ctx context.Context, dataDir string) error
 	Restart(ctx context.Context, dataDir string) error
@@ -194,6 +196,15 @@ func (e Exec) StartPatroni(ctx context.Context, command string) error {
 		return fmt.Errorf("pgbin: patroni start command is empty")
 	}
 	return run(exec.CommandContext(ctx, "sh", "-c", command), "patroni start")
+}
+
+// StopPatroni runs the operator-provided command that stops Patroni on this node
+// (e.g. "systemctl stop patroni"). Like StartPatroni it runs as the current user.
+func (e Exec) StopPatroni(ctx context.Context, command string) error {
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("pgbin: patroni stop command is empty")
+	}
+	return run(exec.CommandContext(ctx, "sh", "-c", command), "patroni stop")
 }
 
 func (e Exec) Promote(ctx context.Context, dataDir string) error {
