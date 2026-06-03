@@ -39,7 +39,8 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 	require.NoError(t, os.WriteFile(patroniCfg, []byte("scope: prod-17\npostgresql:\n  data_dir: /nd\n"), 0o644))
 	pg17 := &fakePG{}                                    // subscription created in the loop (subExists flips true)
 	oldPrimary := &fakePG{subLag: &pg.SubscriptionLag{}} // publisher: zero lag
-	tools := &fakeTools{running: true}                   // PG17 already up -> StartPG17OnN1 skipped
+	// old cluster stopped (oldRunning false), PG17 already up (running) -> start skipped
+	tools := &fakeTools{running: true, newDataDir: "/nd"}
 	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
 		{Name: "n1", Host: "n1", Role: "leader"},
 		{Name: "n2", Host: "n2", Role: "replica"},
@@ -67,7 +68,7 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 }
 
 func TestStartPG17Runs(t *testing.T) {
-	tools := &fakeTools{} // not running yet; StartPatroni flips running=true
+	tools := &fakeTools{newDataDir: "/nd"} // not running yet; StartPatroni flips running=true
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{
 		NewPGBindir: "/n", NewDataDir: "/nd", PatroniStartCommand: "systemctl start patroni",
 	}}, Tools: tools}
@@ -77,11 +78,25 @@ func TestStartPG17Runs(t *testing.T) {
 }
 
 func TestStartPG17SkipsWhenAlreadyRunning(t *testing.T) {
-	tools := &fakeTools{running: true} // pg_ctl status reports a live postmaster
+	tools := &fakeTools{running: true, newDataDir: "/nd"} // pg_ctl status reports a live postmaster
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{NewPGBindir: "/n", NewDataDir: "/nd"}}, Tools: tools}
 	done, err := (&startPG17{d}).Check(context.Background())
 	require.NoError(t, err)
 	assert.True(t, done) // already up -> do not start a second postmaster
+}
+
+func TestVerifyOldClusterStopped_RejectsRunningOldServer(t *testing.T) {
+	tools := &fakeTools{oldRunning: true} // old postgres still alive on the old data dir
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{OldPGBindir: "/o", DataDir: "/data/old"}}, Tools: tools}
+	err := (&verifyOldClusterStopped{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OLD postgres is still running")
+}
+
+func TestVerifyOldClusterStopped_AcceptsStoppedOldServer(t *testing.T) {
+	tools := &fakeTools{oldRunning: false}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{OldPGBindir: "/o", DataDir: "/data/old"}}, Tools: tools}
+	require.NoError(t, (&verifyOldClusterStopped{d}).Run(context.Background()))
 }
 
 func verifyPatroniDeps(t *testing.T, body string) Deps {

@@ -18,6 +18,7 @@ func NewCatchup(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "catchup",
 		steps: []runner.Step{
+			&verifyOldClusterStopped{d},
 			&verifyNewPatroniConfig{d},
 			&startPG17{d},
 			&createForwardSubscription{d},
@@ -26,6 +27,31 @@ func NewCatchup(d Deps) runner.Phase {
 		},
 		trans: []runner.Transition{{To: "switchover"}},
 	}
+}
+
+// --- VerifyOldClusterStopped: refuse to bring up PG17 while the old server lives ---
+//
+// pg_upgrade --link hard-links the old and new data files, so a running OLD
+// postgres on this node WILL corrupt the upgraded cluster (the docs forbid
+// running the old cluster after --link). The old cluster's Patroni, if its
+// service is restarted, can resurrect the old postmaster on the old data dir —
+// pausing the cluster does not prevent that. So before starting PG17 we fail
+// hard if any old postmaster is alive on DataDir.
+type verifyOldClusterStopped struct{ d Deps }
+
+func (s *verifyOldClusterStopped) ID() runner.StepID                   { return "VerifyOldClusterStopped" }
+func (s *verifyOldClusterStopped) Check(context.Context) (bool, error) { return false, nil } // always verify
+func (s *verifyOldClusterStopped) Run(ctx context.Context) error {
+	running, err := s.d.Tools.IsRunning(ctx, s.d.Cfg.Upgrade.OldPGBindir, s.d.Cfg.Upgrade.DataDir)
+	if err != nil {
+		return err
+	}
+	if running {
+		return fmt.Errorf("catchup: an OLD postgres is still running on %s. After pg_upgrade --link the old and new clusters share data files via hard links, so a running old server corrupts the upgraded cluster. Stop the OLD Patroni on this node (it can restart the old server; cluster-pause does not prevent that) and the old server, then re-run: pg_ctl -D %s stop -m fast",
+			s.d.Cfg.Upgrade.DataDir, s.d.Cfg.Upgrade.DataDir)
+	}
+	s.d.logf("старый postgres на %s остановлен — безопасно поднимать PG17", s.d.Cfg.Upgrade.DataDir)
+	return nil
 }
 
 // --- VerifyNewPatroniConfig: fail fast on a misconfigured new-cluster patroni.yml ---
@@ -204,6 +230,7 @@ func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
 }
 
 var (
+	_ runner.Step = (*verifyOldClusterStopped)(nil)
 	_ runner.Step = (*verifyNewPatroniConfig)(nil)
 	_ runner.Step = (*startPG17)(nil)
 	_ runner.Step = (*createForwardSubscription)(nil)

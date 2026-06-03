@@ -29,7 +29,9 @@ type fakeTools struct {
 	started        bool
 	initted        bool
 	initOpts       []string
-	running        bool   // reported by IsRunning
+	running        bool   // IsRunning for newDataDir (the new cluster)
+	oldRunning     bool   // IsRunning for any other datadir (the old cluster)
+	newDataDir     string // which dataDir counts as "new" in IsRunning
 	patroniStarted string // command passed to StartPatroni
 	onPromote      func()
 }
@@ -45,8 +47,11 @@ func (f *fakeTools) InitDB(_ context.Context, _, _ string, opts []string) error 
 	f.initOpts = opts
 	return nil
 }
-func (f *fakeTools) IsRunning(context.Context, string, string) (bool, error) {
-	return f.running, nil
+func (f *fakeTools) IsRunning(_ context.Context, _, dataDir string) (bool, error) {
+	if f.newDataDir != "" && dataDir == f.newDataDir {
+		return f.running, nil
+	}
+	return f.oldRunning, nil
 }
 func (f *fakeTools) StartPatroni(_ context.Context, command string) error {
 	f.patroniStarted = command
