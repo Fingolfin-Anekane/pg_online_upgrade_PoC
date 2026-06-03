@@ -173,10 +173,17 @@ func (e Exec) StopClean(ctx context.Context, dataDir string) error {
 	return run(cmd, "stop")
 }
 
+// startupLog is the file pg_ctl redirects the postmaster's stdout/stderr to via
+// -l. Without it the daemonized server inherits and holds open our captured
+// stdout pipe, so run()'s CombinedOutput would block forever after the server
+// starts (even on a successful start). It lives in the data dir, which OSUser
+// owns and can write.
+func startupLog(dataDir string) string { return filepath.Join(dataDir, "pg_ctl_startup.log") }
+
 // Restart stops (fast) and starts the cluster, waiting for readiness. Used to
 // apply a primary_conninfo change on PG < 13 where it is not reloadable.
 func (e Exec) Restart(ctx context.Context, dataDir string) error {
-	cmd, err := e.command(ctx, e.bin(e.OldBindir, "pg_ctl"), "restart", "-m", "fast", "-w", "-D", dataDir)
+	cmd, err := e.command(ctx, e.bin(e.OldBindir, "pg_ctl"), "restart", "-m", "fast", "-w", "-D", dataDir, "-l", startupLog(dataDir))
 	if err != nil {
 		return err
 	}
@@ -186,7 +193,7 @@ func (e Exec) Restart(ctx context.Context, dataDir string) error {
 // Start launches a stopped cluster with the given bindir's pg_ctl, waiting for
 // readiness. Used to bring PG17 up after pg_upgrade for the catchup subscription.
 func (e Exec) Start(ctx context.Context, bindir, dataDir string) error {
-	cmd, err := e.command(ctx, e.bin(bindir, "pg_ctl"), "start", "-w", "-D", dataDir)
+	cmd, err := e.command(ctx, e.bin(bindir, "pg_ctl"), "start", "-w", "-D", dataDir, "-l", startupLog(dataDir))
 	if err != nil {
 		return err
 	}

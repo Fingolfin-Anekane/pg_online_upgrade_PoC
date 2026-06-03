@@ -10,6 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStartupLogLivesInDataDir(t *testing.T) {
+	// pg_ctl -l <this> keeps the daemonized postmaster off our captured stdout
+	// pipe (otherwise run()'s CombinedOutput blocks forever after a start).
+	assert.Equal(t, "/data/pg17/pg_ctl_startup.log", startupLog("/data/pg17"))
+}
+
 func TestEnsureDirCreatesNestedDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pg_upgrade_output", "run1")
 	// OSUser empty -> no chown branch, so this is exercisable without root.
