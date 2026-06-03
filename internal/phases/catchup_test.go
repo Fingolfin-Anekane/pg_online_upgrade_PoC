@@ -28,9 +28,9 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 	}
 	require.NoError(t, mgr.SetPrimaryHost("primary.host"))
 
-	pg17 := &fakePG{} // PG17 "up" (Check skips Start); subscription created in the loop
+	pg17 := &fakePG{} // subscription created in the loop
 	oldPrimary := &fakePG{}
-	tools := &fakeTools{}
+	tools := &fakeTools{running: true} // PG17 already up -> StartPG17OnN1 skipped
 	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
 		{Name: "n1", Host: "n1", Role: "leader"},
 		{Name: "n2", Host: "n2", Role: "replica"},
@@ -62,6 +62,14 @@ func TestStartPG17Runs(t *testing.T) {
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{NewPGBindir: "/n", NewDataDir: "/nd"}}, Tools: tools}
 	require.NoError(t, (&startPG17{d}).Run(context.Background()))
 	assert.True(t, tools.started)
+}
+
+func TestStartPG17SkipsWhenAlreadyRunning(t *testing.T) {
+	tools := &fakeTools{running: true} // pg_ctl status reports a live postmaster
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{NewPGBindir: "/n", NewDataDir: "/nd"}}, Tools: tools}
+	done, err := (&startPG17{d}).Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done) // already up -> do not start a second postmaster
 }
 
 func TestCatchupTransitionsToSwitchover(t *testing.T) {

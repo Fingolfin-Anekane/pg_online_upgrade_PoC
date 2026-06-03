@@ -29,6 +29,7 @@ type fakeTools struct {
 	started   bool
 	initted   bool
 	initOpts  []string
+	running   bool // reported by IsRunning
 	onPromote func()
 }
 
@@ -42,6 +43,9 @@ func (f *fakeTools) InitDB(_ context.Context, _, _ string, opts []string) error 
 	f.initted = true
 	f.initOpts = opts
 	return nil
+}
+func (f *fakeTools) IsRunning(context.Context, string, string) (bool, error) {
+	return f.running, nil
 }
 func (f *fakeTools) Promote(context.Context, string) error {
 	if f.onPromote != nil {

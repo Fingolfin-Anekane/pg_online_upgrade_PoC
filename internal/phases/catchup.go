@@ -31,18 +31,11 @@ type startPG17 struct{ d Deps }
 
 func (s *startPG17) ID() runner.StepID { return "StartPG17OnN1" }
 func (s *startPG17) Check(ctx context.Context) (bool, error) {
-	// "done" means PG17 already accepts connections. A connection/query error is
-	// treated as "not up yet -> start it"; we do not propagate it here because a
-	// genuinely misconfigured PG17 DSN surfaces as an error on the next step
-	// (CreateForwardSubscription), and Tools.Start is the operator-visible action.
-	c, err := s.d.PG17(ctx)
-	if err != nil {
-		return false, nil
-	}
-	if _, err := c.IsInRecovery(ctx); err != nil {
-		return false, nil
-	}
-	return true, nil
+	// Use pg_ctl status (reads postmaster.pid locally) rather than a DSN probe:
+	// it authoritatively reports whether the server is already up, so a resumed
+	// run does not try to start a second postmaster (which fails). DSN
+	// reachability is a separate concern surfaced at CreateForwardSubscription.
+	return s.d.Tools.IsRunning(ctx, s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewDataDir)
 }
 func (s *startPG17) Run(ctx context.Context) error {
 	s.d.logf("стартую PG17 на N1 (bindir=%s datadir=%s)...", s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewDataDir)

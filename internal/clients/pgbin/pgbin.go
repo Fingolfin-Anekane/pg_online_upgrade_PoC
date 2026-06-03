@@ -5,6 +5,7 @@ package pgbin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,6 +43,8 @@ type PGTools interface {
 	// InitDB initializes a new-version data directory (bindir's initdb), passing
 	// opts (initdb flags) so the new cluster matches the old one's settings.
 	InitDB(ctx context.Context, bindir, dataDir string, opts []string) error
+	// IsRunning reports whether a postmaster is running for dataDir (pg_ctl status).
+	IsRunning(ctx context.Context, bindir, dataDir string) (bool, error)
 	Promote(ctx context.Context, dataDir string) error
 	StopClean(ctx context.Context, dataDir string) error
 	Restart(ctx context.Context, dataDir string) error
@@ -155,6 +158,27 @@ func (e Exec) controlData(ctx context.Context, bindir, dataDir string) (*Control
 		return nil, fmt.Errorf("pgbin: pg_controldata: %w", err)
 	}
 	return parseControlData(string(out)), nil
+}
+
+// IsRunning reports whether a postmaster is running for dataDir, via pg_ctl
+// status (which reads postmaster.pid and probes the process). This is the
+// authoritative local liveness check — independent of any DSN — so Start is
+// idempotent even when the server listens somewhere the configured DSN cannot
+// reach. pg_ctl status exits 0 when running and 3 when not.
+func (e Exec) IsRunning(ctx context.Context, bindir, dataDir string) (bool, error) {
+	cmd, err := e.command(ctx, e.bin(bindir, "pg_ctl"), "status", "-D", dataDir)
+	if err != nil {
+		return false, err
+	}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil // exit 0: a server is running
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 3 {
+		return false, nil // exit 3: no server running
+	}
+	return false, fmt.Errorf("pgbin: pg_ctl status: %w: %s", err, strings.TrimSpace(string(out)))
 }
 
 func (e Exec) Promote(ctx context.Context, dataDir string) error {
