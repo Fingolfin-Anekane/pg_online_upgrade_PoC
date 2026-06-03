@@ -45,6 +45,8 @@ type PGTools interface {
 	InitDB(ctx context.Context, bindir, dataDir string, opts []string) error
 	// IsRunning reports whether a postmaster is running for dataDir (pg_ctl status).
 	IsRunning(ctx context.Context, bindir, dataDir string) (bool, error)
+	// StartPatroni runs the operator's command to bring up Patroni on this node.
+	StartPatroni(ctx context.Context, command string) error
 	Promote(ctx context.Context, dataDir string) error
 	StopClean(ctx context.Context, dataDir string) error
 	Restart(ctx context.Context, dataDir string) error
@@ -179,6 +181,19 @@ func (e Exec) IsRunning(ctx context.Context, bindir, dataDir string) (bool, erro
 		return false, nil // exit 3: no server running
 	}
 	return false, fmt.Errorf("pgbin: pg_ctl status: %w: %s", err, strings.TrimSpace(string(out)))
+}
+
+// StartPatroni runs the operator-provided command that brings up Patroni on this
+// node (e.g. "systemctl start patroni"), so the new cluster comes up under
+// Patroni rather than bare pg_ctl. It runs as the current user (root) — NOT
+// dropped to os_user — because service managers like systemctl require root; if
+// the command itself needs another user it can use sudo. The command must return
+// promptly (start the service in the background), not run Patroni in foreground.
+func (e Exec) StartPatroni(ctx context.Context, command string) error {
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("pgbin: patroni start command is empty")
+	}
+	return run(exec.CommandContext(ctx, "sh", "-c", command), "patroni start")
 }
 
 func (e Exec) Promote(ctx context.Context, dataDir string) error {

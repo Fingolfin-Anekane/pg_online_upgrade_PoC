@@ -63,10 +63,13 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 }
 
 func TestStartPG17Runs(t *testing.T) {
-	tools := &fakeTools{}
-	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{NewPGBindir: "/n", NewDataDir: "/nd"}}, Tools: tools}
+	tools := &fakeTools{} // not running yet; StartPatroni flips running=true
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{
+		NewPGBindir: "/n", NewDataDir: "/nd", PatroniStartCommand: "systemctl start patroni",
+	}}, Tools: tools}
 	require.NoError(t, (&startPG17{d}).Run(context.Background()))
-	assert.True(t, tools.started)
+	assert.Equal(t, "systemctl start patroni", tools.patroniStarted)
+	assert.True(t, tools.running) // PG17 came up under Patroni
 }
 
 func TestStartPG17SkipsWhenAlreadyRunning(t *testing.T) {

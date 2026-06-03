@@ -41,9 +41,18 @@ upgrade:
   # [run]
   new_data_dir: /var/lib/postgresql/17/main
 
-  # Patroni config file on target_node that gets rewritten to the final
-  # (PG17) layout during Upgrade. [run]
+  # Path to the new PG17 cluster's patroni.yml on target_node (read-only for
+  # pg-upgrade: used as the default source of bootstrap.initdb, see
+  # patroni_initdb_config). The operator owns this file; the binary brings
+  # Patroni up with it via patroni_start_command. [run]
   patroni_config_path: /etc/patroni/patroni.yml
+
+  # Command that brings Patroni up on target_node during catchup, so the new PG17
+  # cluster comes up Patroni-managed (adopting the upgraded data dir) rather than
+  # as a bare postgres. Must return promptly (start the service in the
+  # background), not run Patroni in the foreground. Defaults to
+  # "systemctl start patroni". [optional]
+  patroni_start_command: "systemctl start patroni"
 
   # Path to the patroni.yml whose bootstrap.initdb options are passed to initdb
   # when creating new_data_dir, so the new PG17 cluster matches the old one's

@@ -10,6 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStartPatroniRejectsEmptyCommand(t *testing.T) {
+	err := Exec{}.StartPatroni(t.Context(), "   ")
+	assert.ErrorContains(t, err, "empty")
+}
+
 func TestStartupLogLivesInDataDir(t *testing.T) {
 	// pg_ctl -l <this> keeps the daemonized postmaster off our captured stdout
 	// pipe (otherwise run()'s CombinedOutput blocks forever after a start).

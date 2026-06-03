@@ -48,6 +48,21 @@ pg:
 	assert.Equal(t, "/etc/patroni/patroni.yml", cfg.Upgrade.PatroniInitdbConfig)
 }
 
+func TestLoad_PatroniStartCommandDefault(t *testing.T) {
+	f := writeTempFile(t, `
+cluster_name: prod
+upgrade:
+  slot_name: slot_upgrade
+  publication_name: pub_upgrade
+  new_pg_bindir: /usr/lib/postgresql/17/bin
+pg:
+  superuser_dsn: "host=primary port=5432 dbname=postgres user=postgres"
+`)
+	cfg, err := config.Load(f)
+	require.NoError(t, err)
+	assert.Equal(t, "systemctl start patroni", cfg.Upgrade.PatroniStartCommand)
+}
+
 func TestLoad_OSUserExplicitOverridesDefault(t *testing.T) {
 	f := writeTempFile(t, `
 cluster_name: prod

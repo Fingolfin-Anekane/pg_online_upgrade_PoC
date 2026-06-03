@@ -47,6 +47,11 @@ type UpgradeConfig struct {
 	// matches the old one's encoding/locale/checksums. Defaults to
 	// PatroniConfigPath. Unused when new_data_dir is already initialized.
 	PatroniInitdbConfig string `yaml:"patroni_initdb_config"`
+	// PatroniStartCommand brings up Patroni on N1 during catchup so the new PG17
+	// cluster comes up under Patroni management (not bare pg_ctl). It must return
+	// promptly (start the service in the background), e.g. "systemctl start
+	// patroni" — not run Patroni in the foreground. Defaults to DefaultPatroniStart.
+	PatroniStartCommand string `yaml:"patroni_start_command"`
 }
 
 type PGConfig struct {
@@ -60,6 +65,10 @@ type PGConfig struct {
 
 // DefaultOSUser is the OS account PG tools run as when pg.os_user is not set.
 const DefaultOSUser = "postgres"
+
+// DefaultPatroniStart is the command used to bring up Patroni when
+// upgrade.patroni_start_command is not set.
+const DefaultPatroniStart = "systemctl start patroni"
 
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -78,6 +87,9 @@ func Load(path string) (*Config, error) {
 	// its bootstrap.initdb is read before patroni_config_path is rewritten.
 	if cfg.Upgrade.PatroniInitdbConfig == "" {
 		cfg.Upgrade.PatroniInitdbConfig = cfg.Upgrade.PatroniConfigPath
+	}
+	if cfg.Upgrade.PatroniStartCommand == "" {
+		cfg.Upgrade.PatroniStartCommand = DefaultPatroniStart
 	}
 
 	return &cfg, cfg.validate()

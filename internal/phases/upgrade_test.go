@@ -19,18 +19,19 @@ func (f *fakePG) Checkpoint(context.Context) error { f.checkpoints++; return nil
 // fakeTools implements pgbin.PGTools. OldControlData reports the pre-upgrade
 // cluster state; NewControlData reports the post-upgrade sysid.
 type fakeTools struct {
-	oldState  string // State returned by OldControlData (pre-upgrade)
-	sysID     string // SystemID returned by NewControlData (post-upgrade)
-	promoted  bool
-	stopped   bool
-	checked   bool
-	upgraded  bool
-	restarted bool
-	started   bool
-	initted   bool
-	initOpts  []string
-	running   bool // reported by IsRunning
-	onPromote func()
+	oldState       string // State returned by OldControlData (pre-upgrade)
+	sysID          string // SystemID returned by NewControlData (post-upgrade)
+	promoted       bool
+	stopped        bool
+	checked        bool
+	upgraded       bool
+	restarted      bool
+	started        bool
+	initted        bool
+	initOpts       []string
+	running        bool   // reported by IsRunning
+	patroniStarted string // command passed to StartPatroni
+	onPromote      func()
 }
 
 func (f *fakeTools) OldControlData(context.Context, string) (*pgbin.ControlData, error) {
@@ -46,6 +47,11 @@ func (f *fakeTools) InitDB(_ context.Context, _, _ string, opts []string) error 
 }
 func (f *fakeTools) IsRunning(context.Context, string, string) (bool, error) {
 	return f.running, nil
+}
+func (f *fakeTools) StartPatroni(_ context.Context, command string) error {
+	f.patroniStarted = command
+	f.running = true // Patroni brings PG17 up
+	return nil
 }
 func (f *fakeTools) Promote(context.Context, string) error {
 	if f.onPromote != nil {
@@ -77,7 +83,6 @@ func TestUpgradeHappyPath(t *testing.T) {
 		require.NoError(t, mgr.Advance(p))
 	}
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "patroni.yml")
 	initdbCfg := filepath.Join(dir, "patroni-source.yml")
 	require.NoError(t, os.WriteFile(initdbCfg, []byte("bootstrap:\n  initdb:\n    - data-checksums\n    - encoding: UTF8\n"), 0o644))
 	n1 := &fakePG{inRecovery: true} // must be in recovery so PromoteN1.Run is called
@@ -90,7 +95,6 @@ func TestUpgradeHappyPath(t *testing.T) {
 		Cfg: config.Config{Upgrade: config.UpgradeConfig{
 			NewPGBindir: "/n", OldPGBindir: "/o", DataDir: filepath.Join(dir, "data"),
 			NewDataDir:          filepath.Join(dir, "newdata"),
-			PatroniConfigPath:   cfgPath,
 			PatroniInitdbConfig: initdbCfg,
 		}},
 		Mgr: mgr, N1: n1, Tools: tools,
@@ -117,10 +121,6 @@ func TestUpgradeHappyPath(t *testing.T) {
 	assert.Equal(t, 2, n1.checkpoints)
 	assert.True(t, mgr.Get().Artifacts.PgUpgradeDone)
 	assert.Equal(t, "7361852939023499998", mgr.Get().Artifacts.PG17SYSID)
-
-	data, err := os.ReadFile(cfgPath)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "7361852939023499998")
 }
 
 func TestUpgradeRejectsSameDataDirs(t *testing.T) {
