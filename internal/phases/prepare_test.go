@@ -30,6 +30,7 @@ type fakePG struct {
 	serverVersion   int
 	conninfoCleared bool
 	subLag          *pg.SubscriptionLag
+	subExists       bool
 	createdSub      string
 	frozen          string
 	sequences       []pg.SequenceInfo

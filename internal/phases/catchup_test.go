@@ -11,13 +11,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// catchup-phase methods on the shared fakePG
+// catchup-phase methods on the shared fakePG. SubscriptionExists is the
+// subscriber-side existence check (PG17); GetSubscriptionLag is the
+// publisher-side lag (old primary).
+func (f *fakePG) SubscriptionExists(_ context.Context, name string) (bool, error) {
+	return f.subExists, nil
+}
 func (f *fakePG) GetSubscriptionLag(_ context.Context, name string) (*pg.SubscriptionLag, error) {
-	return f.subLag, nil // nil until CreateSubscription sets it
+	return f.subLag, nil
 }
 func (f *fakePG) CreateSubscription(_ context.Context, name, connStr, pubName, slotName string) error {
 	f.createdSub = name
-	f.subLag = &pg.SubscriptionLag{} // subscription now exists with zero lag
+	f.subExists = true // subscription now exists on the subscriber
 	return nil
 }
 
@@ -28,9 +33,9 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 	}
 	require.NoError(t, mgr.SetPrimaryHost("primary.host"))
 
-	pg17 := &fakePG{} // subscription created in the loop
-	oldPrimary := &fakePG{}
-	tools := &fakeTools{running: true} // PG17 already up -> StartPG17OnN1 skipped
+	pg17 := &fakePG{}                                    // subscription created in the loop (subExists flips true)
+	oldPrimary := &fakePG{subLag: &pg.SubscriptionLag{}} // publisher: zero lag
+	tools := &fakeTools{running: true}                   // PG17 already up -> StartPG17OnN1 skipped
 	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
 		{Name: "n1", Host: "n1", Role: "leader"},
 		{Name: "n2", Host: "n2", Role: "replica"},
@@ -80,7 +85,7 @@ func TestCatchupTransitionsToSwitchover(t *testing.T) {
 }
 
 func TestCreateForwardSubscriptionSkipsWhenExists(t *testing.T) {
-	pg17 := &fakePG{subLag: &pg.SubscriptionLag{}} // subscription already exists
+	pg17 := &fakePG{subExists: true} // subscription already exists on the subscriber
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SubscriptionName: "sub_up"}},
 		PG17: func(context.Context) (pg.Client, error) { return pg17, nil }}
 	done, err := (&createForwardSubscription{d}).Check(context.Background())
@@ -111,9 +116,9 @@ func TestVerifyNewClusterHealthyAcceptsSyncStandby(t *testing.T) {
 }
 
 func TestWaitLagZeroErrorsWhenBehind(t *testing.T) {
-	pg17 := &fakePG{subLag: &pg.SubscriptionLag{ReplayLagMs: 500}}
+	primary := &fakePG{subLag: &pg.SubscriptionLag{ReplayLagMs: 500}} // publisher reports lag
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SubscriptionName: "sub_up"}},
-		PG17: func(context.Context) (pg.Client, error) { return pg17, nil }}
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
 	step := &waitLagZero{d}
 	done, err := step.Check(context.Background())
 	require.NoError(t, err)

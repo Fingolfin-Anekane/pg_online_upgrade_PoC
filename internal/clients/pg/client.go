@@ -31,6 +31,7 @@ type Client interface {
 	CreateSubscriptionCreatingSlot(ctx context.Context, name, connStr, pubName string) error
 	DisableSubscription(ctx context.Context, name string) error
 	CountAppBackends(ctx context.Context) (int, error)
+	SubscriptionExists(ctx context.Context, name string) (bool, error)
 	GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error)
 	GetAllSequences(ctx context.Context) ([]SequenceInfo, error)
 	SetSequenceValue(ctx context.Context, schema, name string, value int64) error
@@ -269,13 +270,28 @@ func (c *internalClient) CountAppBackends(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// SubscriptionExists reports whether a subscription with the given name exists
+// (queried on the subscriber). Unlike a pg_stat_subscription probe it sees
+// disabled subscriptions too, so it is the right idempotency check.
+func (c *internalClient) SubscriptionExists(ctx context.Context, name string) (bool, error) {
+	var exists bool
+	err := c.q.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_subscription WHERE subname = $1)", name).Scan(&exists)
+	return exists, err
+}
+
+// GetSubscriptionLag reports the replication lag of the walsender feeding the
+// named subscription. It MUST be called on the PUBLISHER (the node being
+// subscribed to): write/flush/replay_lag live in pg_stat_replication there, not
+// in the subscriber's pg_stat_subscription. The walsender is matched by
+// application_name, which a subscription's apply worker sets to the subscription
+// name by default. Returns nil when no such walsender is connected.
 func (c *internalClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	var lag SubscriptionLag
 	err := c.q.QueryRow(ctx,
 		"SELECT COALESCE(EXTRACT(EPOCH FROM write_lag)*1000, 0)::bigint, "+
 			"COALESCE(EXTRACT(EPOCH FROM flush_lag)*1000, 0)::bigint, "+
 			"COALESCE(EXTRACT(EPOCH FROM replay_lag)*1000, 0)::bigint "+
-			"FROM pg_stat_subscription WHERE subname = $1", name).
+			"FROM pg_stat_replication WHERE application_name = $1", name).
 		Scan(&lag.WriteLagMs, &lag.FlushLagMs, &lag.ReplayLagMs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -424,6 +440,9 @@ func (p *PoolClient) DisableSubscription(ctx context.Context, name string) error
 }
 func (p *PoolClient) CountAppBackends(ctx context.Context) (int, error) {
 	return p.ic().CountAppBackends(ctx)
+}
+func (p *PoolClient) SubscriptionExists(ctx context.Context, name string) (bool, error) {
+	return p.ic().SubscriptionExists(ctx, name)
 }
 func (p *PoolClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	return p.ic().GetSubscriptionLag(ctx, name)

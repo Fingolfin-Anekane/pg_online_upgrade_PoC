@@ -56,11 +56,7 @@ func (s *createForwardSubscription) Check(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	lag, err := pg17.GetSubscriptionLag(ctx, s.d.Cfg.Upgrade.SubscriptionName)
-	if err != nil {
-		return false, err
-	}
-	return lag != nil, nil // subscription exists (has a stat row)
+	return pg17.SubscriptionExists(ctx, s.d.Cfg.Upgrade.SubscriptionName)
 }
 func (s *createForwardSubscription) Run(ctx context.Context) error {
 	pg17, err := s.d.PG17(ctx)
@@ -100,16 +96,17 @@ func (s *waitLagZero) Run(ctx context.Context) error {
 	return nil
 }
 func (s *waitLagZero) zero(ctx context.Context) (bool, error) {
-	pg17, err := s.d.PG17(ctx)
+	// Lag lives on the publisher (the old primary), in pg_stat_replication.
+	primary, err := s.d.Primary(ctx)
 	if err != nil {
 		return false, err
 	}
-	lag, err := pg17.GetSubscriptionLag(ctx, s.d.Cfg.Upgrade.SubscriptionName)
+	lag, err := primary.GetSubscriptionLag(ctx, s.d.Cfg.Upgrade.SubscriptionName)
 	if err != nil {
 		return false, err
 	}
 	if lag == nil {
-		return false, fmt.Errorf("catchup: subscription %s not found", s.d.Cfg.Upgrade.SubscriptionName)
+		return false, fmt.Errorf("catchup: no walsender for subscription %s on the publisher yet", s.d.Cfg.Upgrade.SubscriptionName)
 	}
 	return lag.WriteLagMs == 0 && lag.FlushLagMs == 0 && lag.ReplayLagMs == 0, nil
 }

@@ -48,8 +48,9 @@ func TestSwitchoverTransitionsToFinalize(t *testing.T) {
 }
 
 func TestSwitchoverFreezeAndSyncSequences(t *testing.T) {
-	pg17 := &fakePG{subLag: &pg.SubscriptionLag{}} // subscription exists, zero lag
-	oldPrimary := &fakePG{sequences: []pg.SequenceInfo{{Schema: "public", Name: "s1", LastValue: 42}}}
+	pg17 := &fakePG{}
+	// publisher (old primary): zero lag + the sequence to sync
+	oldPrimary := &fakePG{subLag: &pg.SubscriptionLag{}, sequences: []pg.SequenceInfo{{Schema: "public", Name: "s1", LastValue: 42}}}
 	d := switchoverDeps(t, pg17, oldPrimary)
 
 	steps := NewSwitchover(d).Steps()
@@ -67,8 +68,8 @@ func TestSwitchoverFreezeAndSyncSequences(t *testing.T) {
 }
 
 func TestWaitFinalLagZeroErrorsWhenBehind(t *testing.T) {
-	pg17 := &fakePG{subLag: &pg.SubscriptionLag{FlushLagMs: 250}}
-	d := switchoverDeps(t, pg17, &fakePG{})
+	// lag is reported by the publisher (old primary), not PG17
+	d := switchoverDeps(t, &fakePG{}, &fakePG{subLag: &pg.SubscriptionLag{FlushLagMs: 250}})
 	step := &waitFinalLagZero{d}
 	done, err := step.Check(context.Background())
 	require.NoError(t, err)

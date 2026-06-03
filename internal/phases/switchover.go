@@ -65,16 +65,17 @@ func (s *waitFinalLagZero) Run(ctx context.Context) error {
 	return nil
 }
 func (s *waitFinalLagZero) zero(ctx context.Context) (bool, error) {
-	pg17, err := s.d.PG17(ctx)
+	// Lag lives on the publisher (the frozen old primary), in pg_stat_replication.
+	primary, err := s.d.Primary(ctx)
 	if err != nil {
 		return false, err
 	}
-	lag, err := pg17.GetSubscriptionLag(ctx, s.d.Cfg.Upgrade.SubscriptionName)
+	lag, err := primary.GetSubscriptionLag(ctx, s.d.Cfg.Upgrade.SubscriptionName)
 	if err != nil {
 		return false, err
 	}
 	if lag == nil {
-		return false, fmt.Errorf("switchover: subscription %s not found", s.d.Cfg.Upgrade.SubscriptionName)
+		return false, fmt.Errorf("switchover: no walsender for subscription %s on the publisher", s.d.Cfg.Upgrade.SubscriptionName)
 	}
 	return lag.WriteLagMs == 0 && lag.FlushLagMs == 0 && lag.ReplayLagMs == 0, nil
 }
