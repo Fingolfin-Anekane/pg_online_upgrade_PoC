@@ -1,12 +1,23 @@
 package pgbin
 
 import (
+	"os"
 	"os/user"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestEnsureWorkDirCreatesNestedDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pg_upgrade_output", "run1")
+	// OSUser empty -> no chown branch, so this is exercisable without root.
+	require.NoError(t, Exec{}.ensureWorkDir(dir))
+	st, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.True(t, st.IsDir())
+}
 
 func TestCredentialParsesUIDGID(t *testing.T) {
 	cred, err := credential(&user.User{Uid: "26", Gid: "26"})

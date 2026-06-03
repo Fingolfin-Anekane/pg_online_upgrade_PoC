@@ -65,12 +65,12 @@ func (e Exec) bin(dir, name string) string { return filepath.Join(dir, name) }
 // they end up running as postgres.
 func (e Exec) command(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	if e.OSUser == "" || os.Geteuid() != 0 {
-		return cmd, nil // nothing to switch, or not privileged to switch
-	}
-	u, err := user.Lookup(e.OSUser)
+	u, drop, err := e.targetUser()
 	if err != nil {
-		return nil, fmt.Errorf("pgbin: lookup os_user %q: %w", e.OSUser, err)
+		return nil, err
+	}
+	if !drop {
+		return cmd, nil // nothing to switch, or not privileged to switch
 	}
 	cred, err := credential(u)
 	if err != nil {
@@ -80,6 +80,44 @@ func (e Exec) command(ctx context.Context, name string, args ...string) (*exec.C
 	// PG tools consult HOME/USER (e.g. for .pgpass); point them at the target user.
 	cmd.Env = append(os.Environ(), "HOME="+u.HomeDir, "USER="+e.OSUser, "LOGNAME="+e.OSUser)
 	return cmd, nil
+}
+
+// targetUser resolves the OS user that PG tools should run as. drop is true only
+// when a privilege drop is both requested (OSUser set) and possible (we are
+// root); otherwise commands run as the current user.
+func (e Exec) targetUser() (u *user.User, drop bool, err error) {
+	if e.OSUser == "" || os.Geteuid() != 0 {
+		return nil, false, nil
+	}
+	u, err = user.Lookup(e.OSUser)
+	if err != nil {
+		return nil, false, fmt.Errorf("pgbin: lookup os_user %q: %w", e.OSUser, err)
+	}
+	return u, true, nil
+}
+
+// ensureWorkDir creates dir (it is pg_upgrade's working/output directory) and,
+// when dropping privileges, chowns it to the target user so pg_upgrade — running
+// as that user — can write its pg_upgrade_output.d there.
+func (e Exec) ensureWorkDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("pgbin: create work dir %s: %w", dir, err)
+	}
+	u, drop, err := e.targetUser()
+	if err != nil {
+		return err
+	}
+	if !drop {
+		return nil // running as the current user: it already owns what it created
+	}
+	cred, err := credential(u)
+	if err != nil {
+		return err
+	}
+	if err := os.Chown(dir, int(cred.Uid), int(cred.Gid)); err != nil {
+		return fmt.Errorf("pgbin: chown work dir %s to %s: %w", dir, e.OSUser, err)
+	}
+	return nil
 }
 
 // credential converts a resolved OS user into a syscall credential (uid/gid).
@@ -183,8 +221,11 @@ func (e Exec) upgradeCmd(ctx context.Context, o UpgradeOptions, check bool) (*ex
 		return nil, err
 	}
 	// pg_upgrade writes its output (pg_upgrade_output.d / log files) to the working
-	// directory; run it from a directory the target user can write to, when given.
+	// directory; create it (owned by the target user) and run from there.
 	if o.WorkDir != "" {
+		if err := e.ensureWorkDir(o.WorkDir); err != nil {
+			return nil, err
+		}
 		cmd.Dir = o.WorkDir
 	}
 	return cmd, nil
