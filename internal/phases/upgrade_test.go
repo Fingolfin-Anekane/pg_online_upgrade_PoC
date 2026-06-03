@@ -27,6 +27,8 @@ type fakeTools struct {
 	upgraded  bool
 	restarted bool
 	started   bool
+	initted   bool
+	initOpts  []string
 	onPromote func()
 }
 
@@ -35,6 +37,11 @@ func (f *fakeTools) OldControlData(context.Context, string) (*pgbin.ControlData,
 }
 func (f *fakeTools) NewControlData(context.Context, string) (*pgbin.ControlData, error) {
 	return &pgbin.ControlData{State: "in production", SystemID: f.sysID}, nil
+}
+func (f *fakeTools) InitDB(_ context.Context, _, _ string, opts []string) error {
+	f.initted = true
+	f.initOpts = opts
+	return nil
 }
 func (f *fakeTools) Promote(context.Context, string) error {
 	if f.onPromote != nil {
@@ -67,6 +74,8 @@ func TestUpgradeHappyPath(t *testing.T) {
 	}
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "patroni.yml")
+	initdbCfg := filepath.Join(dir, "patroni-source.yml")
+	require.NoError(t, os.WriteFile(initdbCfg, []byte("bootstrap:\n  initdb:\n    - data-checksums\n    - encoding: UTF8\n"), 0o644))
 	n1 := &fakePG{inRecovery: true} // must be in recovery so PromoteN1.Run is called
 	tools := &fakeTools{
 		oldState:  "in archive recovery", // running standby: PromoteN1 must run
@@ -76,8 +85,9 @@ func TestUpgradeHappyPath(t *testing.T) {
 	d := Deps{
 		Cfg: config.Config{Upgrade: config.UpgradeConfig{
 			NewPGBindir: "/n", OldPGBindir: "/o", DataDir: filepath.Join(dir, "data"),
-			NewDataDir:        filepath.Join(dir, "newdata"),
-			PatroniConfigPath: cfgPath,
+			NewDataDir:          filepath.Join(dir, "newdata"),
+			PatroniConfigPath:   cfgPath,
+			PatroniInitdbConfig: initdbCfg,
 		}},
 		Mgr: mgr, N1: n1, Tools: tools,
 	}
@@ -96,6 +106,8 @@ func TestUpgradeHappyPath(t *testing.T) {
 	}
 	assert.True(t, tools.promoted)
 	assert.True(t, tools.stopped)
+	assert.True(t, tools.initted)
+	assert.Equal(t, []string{"--data-checksums", "--encoding=UTF8"}, tools.initOpts)
 	assert.True(t, tools.checked)
 	assert.True(t, tools.upgraded)
 	assert.Equal(t, 2, n1.checkpoints)

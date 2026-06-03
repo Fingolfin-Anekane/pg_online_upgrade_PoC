@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEnsureWorkDirCreatesNestedDir(t *testing.T) {
+func TestEnsureDirCreatesNestedDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pg_upgrade_output", "run1")
 	// OSUser empty -> no chown branch, so this is exercisable without root.
-	require.NoError(t, Exec{}.ensureWorkDir(dir))
+	require.NoError(t, Exec{}.ensureDir(dir, 0o750))
 	st, err := os.Stat(dir)
 	require.NoError(t, err)
 	assert.True(t, st.IsDir())

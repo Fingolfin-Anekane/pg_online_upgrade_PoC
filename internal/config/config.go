@@ -42,6 +42,11 @@ type UpgradeConfig struct {
 	SequenceBuffer    int64  `yaml:"sequence_buffer"`
 	PgUpgradeLogDir   string `yaml:"pg_upgrade_log_dir"`
 	LogArchiveDir     string `yaml:"log_archive_dir"`
+	// PatroniInitdbConfig is the path to the new cluster's patroni.yml; its
+	// bootstrap.initdb options are passed to initdb when creating new_data_dir, so
+	// the new cluster matches the old one's encoding/locale/checksums. Unused when
+	// new_data_dir is already initialized.
+	PatroniInitdbConfig string `yaml:"patroni_initdb_config"`
 }
 
 type PGConfig struct {

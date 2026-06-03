@@ -39,6 +39,9 @@ type PGTools interface {
 	// pre-upgrade PG10 cluster); NewControlData uses NewBindir (post-upgrade PG17).
 	OldControlData(ctx context.Context, dataDir string) (*ControlData, error)
 	NewControlData(ctx context.Context, dataDir string) (*ControlData, error)
+	// InitDB initializes a new-version data directory (bindir's initdb), passing
+	// opts (initdb flags) so the new cluster matches the old one's settings.
+	InitDB(ctx context.Context, bindir, dataDir string, opts []string) error
 	Promote(ctx context.Context, dataDir string) error
 	StopClean(ctx context.Context, dataDir string) error
 	Restart(ctx context.Context, dataDir string) error
@@ -96,12 +99,11 @@ func (e Exec) targetUser() (u *user.User, drop bool, err error) {
 	return u, true, nil
 }
 
-// ensureWorkDir creates dir (it is pg_upgrade's working/output directory) and,
-// when dropping privileges, chowns it to the target user so pg_upgrade — running
-// as that user — can write its pg_upgrade_output.d there.
-func (e Exec) ensureWorkDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("pgbin: create work dir %s: %w", dir, err)
+// ensureDir creates dir with the given perm and, when dropping privileges,
+// chowns it to the target user so a PG tool running as that user can write there.
+func (e Exec) ensureDir(dir string, perm os.FileMode) error {
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return fmt.Errorf("pgbin: create dir %s: %w", dir, err)
 	}
 	u, drop, err := e.targetUser()
 	if err != nil {
@@ -115,7 +117,7 @@ func (e Exec) ensureWorkDir(dir string) error {
 		return err
 	}
 	if err := os.Chown(dir, int(cred.Uid), int(cred.Gid)); err != nil {
-		return fmt.Errorf("pgbin: chown work dir %s to %s: %w", dir, e.OSUser, err)
+		return fmt.Errorf("pgbin: chown dir %s to %s: %w", dir, e.OSUser, err)
 	}
 	return nil
 }
@@ -223,12 +225,29 @@ func (e Exec) upgradeCmd(ctx context.Context, o UpgradeOptions, check bool) (*ex
 	// pg_upgrade writes its output (pg_upgrade_output.d / log files) to the working
 	// directory; create it (owned by the target user) and run from there.
 	if o.WorkDir != "" {
-		if err := e.ensureWorkDir(o.WorkDir); err != nil {
+		if err := e.ensureDir(o.WorkDir, 0o750); err != nil {
 			return nil, err
 		}
 		cmd.Dir = o.WorkDir
 	}
 	return cmd, nil
+}
+
+// InitDB initializes a fresh data directory for the new cluster (required before
+// pg_upgrade). opts are extra initdb flags (e.g. --data-checksums, --encoding=…)
+// derived from the new cluster's Patroni bootstrap.initdb so the new cluster
+// matches what pg_upgrade and Patroni expect. The data dir is created owned by
+// OSUser so initdb, running as that user, can populate it.
+func (e Exec) InitDB(ctx context.Context, bindir, dataDir string, opts []string) error {
+	if err := e.ensureDir(dataDir, 0o700); err != nil {
+		return err
+	}
+	args := append([]string{"-D", dataDir}, opts...)
+	cmd, err := e.command(ctx, e.bin(bindir, "initdb"), args...)
+	if err != nil {
+		return err
+	}
+	return run(cmd, "initdb")
 }
 
 func run(cmd *exec.Cmd, label string) error {

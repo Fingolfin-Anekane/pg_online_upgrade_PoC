@@ -20,6 +20,7 @@ func NewUpgrade(d Deps) runner.Phase {
 		steps: []runner.Step{
 			&promoteN1{d},
 			&shutdownN1Clean{d},
+			&initNewDataDir{d},
 			&runPgUpgradeCheck{d},
 			&runPgUpgrade{d},
 			&writeFinalPatroniConfig{d},

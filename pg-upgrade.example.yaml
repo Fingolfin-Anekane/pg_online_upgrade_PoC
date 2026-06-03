@@ -45,6 +45,12 @@ upgrade:
   # (PG17) layout during Upgrade. [run]
   patroni_config_path: /etc/patroni/patroni.yml
 
+  # Path to the new cluster's patroni.yml; its bootstrap.initdb options are
+  # passed to initdb when creating new_data_dir, so the new PG17 cluster matches
+  # the old one's encoding/locale/data-checksums (a mismatch fails pg_upgrade
+  # --check). Unused if new_data_dir is already initialized. [run]
+  patroni_initdb_config: /etc/patroni/patroni.yml
+
   # --- new cluster endpoints ---------------------------------------------
   # Superuser DSN to the new PG17 cluster (Catchup/Switchover/Finalize talk to
   # it). dbname in the DSN must match `dbname` below. [run]
