@@ -153,13 +153,22 @@ func (e Exec) NewControlData(ctx context.Context, dataDir string) (*ControlData,
 }
 
 func (e Exec) controlData(ctx context.Context, bindir, dataDir string) (*ControlData, error) {
-	cmd, err := e.command(ctx, e.bin(bindir, "pg_controldata"), "-D", dataDir)
+	bin := e.bin(bindir, "pg_controldata")
+	cmd, err := e.command(ctx, bin, "-D", dataDir)
 	if err != nil {
 		return nil, err
 	}
+	// Capture stderr: pg_controldata writes the actual failure reason there (e.g.
+	// "could not open file .../global/pg_control", or a usage block when the
+	// resolved binary isn't really pg_controldata). cmd.Output() would otherwise
+	// bury it in ExitError.Stderr and our error would be an undiagnosable "exit
+	// status 1".
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("pgbin: pg_controldata: %w", err)
+		return nil, fmt.Errorf("pgbin: pg_controldata %s -D %s: %w: %s",
+			bin, dataDir, err, strings.TrimSpace(stderr.String()))
 	}
 	return parseControlData(string(out)), nil
 }
