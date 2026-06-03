@@ -182,11 +182,11 @@ func TestVerifyNewClusterHealthyRejectsNoLeader(t *testing.T) {
 	assert.Contains(t, err.Error(), "no leader")
 }
 
-func TestVerifyNewClusterHealthyRejectsNoReplica(t *testing.T) {
+func TestVerifyNewClusterHealthyAcceptsLeaderOnly(t *testing.T) {
+	// A single-node cluster (leader, no standby yet) is healthy enough for catchup;
+	// the standby is an HA nicety the operator can add before switchover.
 	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{{Name: "n1", Role: "leader"}}}}
-	err := (&verifyNewClusterHealthy{Deps{NewPatroni: newPat}}).Run(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no standby")
+	require.NoError(t, (&verifyNewClusterHealthy{Deps{NewPatroni: newPat}}).Run(context.Background()))
 }
 
 func TestVerifyNewClusterHealthyAcceptsSyncStandby(t *testing.T) {

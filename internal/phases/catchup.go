@@ -241,7 +241,7 @@ type verifyNewClusterHealthy struct{ d Deps }
 func (s *verifyNewClusterHealthy) ID() runner.StepID                   { return "VerifyNewClusterHealthy" }
 func (s *verifyNewClusterHealthy) Check(context.Context) (bool, error) { return false, nil } // always verify
 func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
-	s.d.logf("проверяю здоровье нового кластера через Patroni (лидер + хотя бы одна реплика)...")
+	s.d.logf("проверяю здоровье нового кластера через Patroni (нужен лидер)...")
 	cluster, err := s.d.NewPatroni.GetCluster(ctx)
 	if err != nil {
 		return err
@@ -249,16 +249,19 @@ func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
 	if cluster.Leader() == nil {
 		return fmt.Errorf("catchup: new Patroni cluster has no leader (form the new cluster, then re-run)")
 	}
+	// A leader is enough to proceed; standbys are an HA nicety, not a gate. We only
+	// surface their count (and nudge the operator) rather than failing without one.
 	standbys := 0
 	for _, m := range cluster.Members {
 		if m.Role != "leader" { // replica, sync_standby, etc.
 			standbys++
 		}
 	}
-	if standbys < 1 {
-		return fmt.Errorf("catchup: new Patroni cluster has no standby yet (add a replica, then re-run)")
+	if standbys == 0 {
+		s.d.logf("новый кластер: есть лидер, реплик пока нет — добавь реплику перед switchover для отказоустойчивости")
+	} else {
+		s.d.logf("новый кластер здоров: есть лидер и реплик=%d", standbys)
 	}
-	s.d.logf("новый кластер здоров: есть лидер и реплик=%d", standbys)
 	return nil
 }
 
