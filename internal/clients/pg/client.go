@@ -132,12 +132,21 @@ func (c *internalClient) GetLastWALReplayLSN(ctx context.Context) (string, error
 }
 
 func (c *internalClient) GetWALReceiverReceivedLSN(ctx context.Context) (string, error) {
-	var lsn *string
-	err := c.q.QueryRow(ctx, "SELECT received_lsn::text FROM pg_stat_wal_receiver").Scan(&lsn)
-	if err != nil || lsn == nil {
+	// pg_stat_wal_receiver's "received_lsn" column was renamed to "flushed_lsn"
+	// in PG13. Read whichever exists via to_jsonb (which only carries columns the
+	// running server actually has) so a single query works on PG10–17 without a
+	// version probe. No row means the receiver already disconnected -> "".
+	var lsn string
+	err := c.q.QueryRow(ctx,
+		`SELECT COALESCE(to_jsonb(s) ->> 'flushed_lsn', to_jsonb(s) ->> 'received_lsn', '')
+		   FROM pg_stat_wal_receiver s`).Scan(&lsn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil // receiver already disconnected: no row
+	}
+	if err != nil {
 		return "", err
 	}
-	return *lsn, nil
+	return lsn, nil
 }
 
 // IsWALReceiverActive reports whether N1 is still streaming WAL from a primary.

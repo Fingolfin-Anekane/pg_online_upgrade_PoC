@@ -40,6 +40,38 @@ func TestIsInRecovery_True(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestGetWALReceiverReceivedLSN_VersionAgnostic(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	// The query must not hardcode received_lsn (renamed to flushed_lsn in PG13);
+	// it reads whichever of the two columns exists via to_jsonb + COALESCE.
+	mock.ExpectQuery("to_jsonb").
+		WillReturnRows(pgxmock.NewRows([]string{"lsn"}).AddRow("0/3FA20000"))
+
+	c := pgclient.NewFromPool(mock)
+	lsn, err := c.GetWALReceiverReceivedLSN(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "0/3FA20000", lsn)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetWALReceiverReceivedLSN_NoRow(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	// No walreceiver row (already disconnected) -> empty string, no error.
+	mock.ExpectQuery("pg_stat_wal_receiver").
+		WillReturnRows(pgxmock.NewRows([]string{"lsn"}))
+
+	c := pgclient.NewFromPool(mock)
+	lsn, err := c.GetWALReceiverReceivedLSN(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "", lsn)
+}
+
 func TestGetLastWALReplayLSN(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
