@@ -45,10 +45,11 @@ upgrade:
   # (PG17) layout during Upgrade. [run]
   patroni_config_path: /etc/patroni/patroni.yml
 
-  # Path to the new cluster's patroni.yml; its bootstrap.initdb options are
-  # passed to initdb when creating new_data_dir, so the new PG17 cluster matches
-  # the old one's encoding/locale/data-checksums (a mismatch fails pg_upgrade
-  # --check). Unused if new_data_dir is already initialized. [run]
+  # Path to the patroni.yml whose bootstrap.initdb options are passed to initdb
+  # when creating new_data_dir, so the new PG17 cluster matches the old one's
+  # encoding/locale/data-checksums (a mismatch fails pg_upgrade --check).
+  # Defaults to patroni_config_path; unused if new_data_dir is already
+  # initialized. [optional]
   patroni_initdb_config: /etc/patroni/patroni.yml
 
   # --- new cluster endpoints ---------------------------------------------
