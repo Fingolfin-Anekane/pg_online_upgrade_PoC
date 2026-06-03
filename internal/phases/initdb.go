@@ -52,22 +52,6 @@ func (s *initNewDataDir) Run(ctx context.Context) error {
 	return nil
 }
 
-// parsePatroniScopeDataDir extracts the scope and postgresql.data_dir from a
-// Patroni config. Either may be empty if set via environment variables instead
-// of the file; callers must tolerate that.
-func parsePatroniScopeDataDir(patroniYAML []byte) (scope, dataDir string, err error) {
-	var doc struct {
-		Scope      string `yaml:"scope"`
-		Postgresql struct {
-			DataDir string `yaml:"data_dir"`
-		} `yaml:"postgresql"`
-	}
-	if err := yaml.Unmarshal(patroniYAML, &doc); err != nil {
-		return "", "", fmt.Errorf("catchup: parse patroni config: %w", err)
-	}
-	return doc.Scope, doc.Postgresql.DataDir, nil
-}
-
 // patroniManagedFields are the patroni.yml fields PatchNewPatroniConfig manages.
 type patroniManagedFields struct {
 	Scope     string

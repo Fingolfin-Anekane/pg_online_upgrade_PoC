@@ -110,8 +110,14 @@ func (s *patchNewPatroniConfig) Run(_ context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, patched, 0o644); err != nil {
-		return fmt.Errorf("catchup: write patched patroni config %s: %w", path, err)
+	// Write atomically (tmp + rename within the same dir/filesystem) so Patroni,
+	// which may read this file at any moment, never sees a half-written config.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, patched, 0o644); err != nil {
+		return fmt.Errorf("catchup: write patched patroni config %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("catchup: replace patroni config %s: %w", path, err)
 	}
 	s.d.logf("новый patroni.yml приведён к PG17 (оригинал сохранён в %s)", bak)
 	return nil
