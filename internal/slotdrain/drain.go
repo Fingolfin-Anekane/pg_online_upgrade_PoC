@@ -74,50 +74,78 @@ func Drain(ctx context.Context, cfg Config) (*Report, error) {
 	report := &Report{}
 	var lastFlushLSN pglogrepl.LSN
 
+	// finalize advances confirmed_flush to exactly targetLSN and returns the
+	// report. Data committed at or before target is already in the PG17 baseline
+	// (N1 was physically frozen at target_lsn); the tail — every transaction whose
+	// commit_lsn > target, including long transactions that started before target
+	// but commit after it — stays in the slot for the PG17 subscription, because
+	// the slot redelivers anything committing after confirmed_flush.
+	finalize := func() (*Report, error) {
+		if err := sendStatusUpdate(ctx, conn, targetLSN); err != nil {
+			return nil, err
+		}
+		report.CompletedAt = time.Now()
+		report.FinalFlushLSN = targetLSN.String()
+		return report, nil
+	}
+
 	for {
 		msg, err := conn.ReceiveMessage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("slotdrain receive: %w", err)
 		}
 
-		switch m := msg.(type) {
-		case *pgproto3.CopyData:
-			if len(m.Data) == 0 {
-				continue
+		cd, ok := msg.(*pgproto3.CopyData)
+		if !ok || len(cd.Data) == 0 {
+			continue
+		}
+
+		switch cd.Data[0] {
+		case pglogrepl.XLogDataByteID:
+			xld, err := pglogrepl.ParseXLogData(cd.Data[1:])
+			if err != nil {
+				return nil, fmt.Errorf("slotdrain parse xlog: %w", err)
 			}
-			switch m.Data[0] {
-			case pglogrepl.XLogDataByteID:
-				xld, err := pglogrepl.ParseXLogData(m.Data[1:])
-				if err != nil {
-					return nil, fmt.Errorf("slotdrain parse xlog: %w", err)
-				}
+			stop, err := handleXLogData(ctx, conn, xld, targetLSN, report, &lastFlushLSN)
+			if err != nil {
+				return nil, err
+			}
+			// Stop either because we saw a commit beyond target, or because the
+			// server's WAL stream has itself advanced to/over target — the latter
+			// is what prevents an indefinite wait when no post-target commit ever
+			// arrives (idle primary, empty transactions, or writes to relations
+			// outside the publication).
+			if stop || reachedTarget(xld.ServerWALEnd, targetLSN) {
+				return finalize()
+			}
 
-				if err := handleXLogData(ctx, conn, xld, targetLSN, report, &lastFlushLSN); err != nil {
-					if err == errStopDrain {
-						report.CompletedAt = time.Now()
-						report.FinalFlushLSN = lastFlushLSN.String()
-						return report, nil
-					}
+		case pglogrepl.PrimaryKeepaliveMessageByteID:
+			pka, err := pglogrepl.ParsePrimaryKeepaliveMessage(cd.Data[1:])
+			if err != nil {
+				return nil, fmt.Errorf("slotdrain parse keepalive: %w", err)
+			}
+			if reachedTarget(pka.ServerWALEnd, targetLSN) {
+				return finalize()
+			}
+			if pka.ReplyRequested {
+				if err := sendStatusUpdate(ctx, conn, lastFlushLSN); err != nil {
 					return nil, err
-				}
-
-			case pglogrepl.PrimaryKeepaliveMessageByteID:
-				pka, err := pglogrepl.ParsePrimaryKeepaliveMessage(m.Data[1:])
-				if err != nil {
-					return nil, fmt.Errorf("slotdrain parse keepalive: %w", err)
-				}
-				if pka.ReplyRequested {
-					if err := sendStatusUpdate(ctx, conn, lastFlushLSN); err != nil {
-						return nil, err
-					}
 				}
 			}
 		}
 	}
 }
 
-var errStopDrain = fmt.Errorf("stop drain")
+// reachedTarget reports whether the server's streamed WAL position has advanced
+// to or past target, which means every transaction committing at or before
+// target has already been delivered (logical decoding streams in commit order).
+func reachedTarget(serverWALEnd, target pglogrepl.LSN) bool {
+	return serverWALEnd >= target
+}
 
+// handleXLogData ACKs a commit at or before target and returns stop=true when it
+// sees the first commit beyond target (the rest is the tail for PG17). Non-commit
+// messages and undecodable payloads are skipped.
 func handleXLogData(
 	ctx context.Context,
 	conn *pgconn.PgConn,
@@ -125,35 +153,31 @@ func handleXLogData(
 	targetLSN pglogrepl.LSN,
 	report *Report,
 	lastFlushLSN *pglogrepl.LSN,
-) error {
+) (bool, error) {
 	if len(xld.WALData) == 0 {
-		return nil
+		return false, nil
 	}
 
-	// Parse the logical replication message. We only care about Commit messages
-	// (transaction boundaries); everything else is skipped. Parse errors for
-	// message types we don't decode are non-fatal — just continue.
 	logicalMsg, err := pglogrepl.Parse(xld.WALData)
 	if err != nil {
-		return nil
+		return false, nil
 	}
 
 	commitMsg, ok := logicalMsg.(*pglogrepl.CommitMessage)
 	if !ok {
-		return nil
+		return false, nil
 	}
 
 	if commitMsg.CommitLSN <= targetLSN {
 		if err := sendStatusUpdate(ctx, conn, commitMsg.CommitLSN); err != nil {
-			return err
+			return false, err
 		}
 		*lastFlushLSN = commitMsg.CommitLSN
 		report.TransactionsDrained++
-		return nil
+		return false, nil
 	}
 
-	// commit_lsn > targetLSN: stop without ACKing
-	return errStopDrain
+	return true, nil // commit_lsn > targetLSN: stop, leave it for PG17
 }
 
 func sendStatusUpdate(ctx context.Context, conn *pgconn.PgConn, lsn pglogrepl.LSN) error {
