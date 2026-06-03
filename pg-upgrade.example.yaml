@@ -77,6 +77,11 @@ pg:
   # Superuser DSN to the LOCAL node (target_node) the agent drives directly:
   # promote, freeze triggers, slot ops. [base]
   superuser_dsn: "host=/var/run/postgresql port=5432 user=postgres dbname=appdb"
+  # OS account that owns the data directory. pg_ctl/pg_upgrade/pg_controldata
+  # refuse to run as root, so when the orchestrator runs as root it drops
+  # privileges to this user. Leave empty if you run pg-upgrade as that user. The
+  # pg_upgrade_log_dir must be writable by this user. [run, if running as root]
+  os_user: postgres
 
 # Patroni REST API credentials. Required only if restapi.authentication is
 # enabled on the cluster: Patroni protects unsafe methods (PATCH /config, used

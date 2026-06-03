@@ -1,10 +1,32 @@
 package pgbin
 
 import (
+	"os/user"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestCredentialParsesUIDGID(t *testing.T) {
+	cred, err := credential(&user.User{Uid: "26", Gid: "26"})
+	require.NoError(t, err)
+	assert.Equal(t, uint32(26), cred.Uid)
+	assert.Equal(t, uint32(26), cred.Gid)
+}
+
+func TestCredentialRejectsNonNumericUID(t *testing.T) {
+	_, err := credential(&user.User{Uid: "postgres", Gid: "26"})
+	assert.ErrorContains(t, err, "parse uid")
+}
+
+// command() leaves SysProcAttr nil when no OSUser is configured, so non-root /
+// already-correct-user runs are unaffected.
+func TestCommandNoUserSwitchByDefault(t *testing.T) {
+	cmd, err := Exec{}.command(t.Context(), "/bin/true")
+	require.NoError(t, err)
+	assert.Nil(t, cmd.SysProcAttr)
+}
 
 func TestParseControlData(t *testing.T) {
 	out := `pg_control version number:            1300

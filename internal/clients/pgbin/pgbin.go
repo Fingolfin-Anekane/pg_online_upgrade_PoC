@@ -6,9 +6,13 @@ package pgbin
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 // ControlData is the subset of pg_controldata output the orchestrator needs.
@@ -23,6 +27,9 @@ type UpgradeOptions struct {
 	NewBindir  string
 	OldDataDir string
 	NewDataDir string
+	// WorkDir, when set, is the working directory pg_upgrade runs in (where it
+	// writes pg_upgrade_output.d / log files). It must be writable by OSUser.
+	WorkDir string
 }
 
 // PGTools is the seam the upgrade steps depend on, so their idempotency checks
@@ -44,9 +51,49 @@ type PGTools interface {
 type Exec struct {
 	NewBindir string
 	OldBindir string
+	// OSUser is the OS account that owns the PostgreSQL data directory. The PG
+	// binaries (pg_ctl, pg_upgrade, pg_controldata) refuse to run as root, so when
+	// the orchestrator runs as root we drop privileges to this user. Empty leaves
+	// commands running as the current user (correct when already running as it).
+	OSUser string
 }
 
 func (e Exec) bin(dir, name string) string { return filepath.Join(dir, name) }
+
+// command builds an exec.Cmd, dropping privileges to OSUser when the orchestrator
+// runs as root. The PG tools abort with "cannot be run as root", so this is how
+// they end up running as postgres.
+func (e Exec) command(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if e.OSUser == "" || os.Geteuid() != 0 {
+		return cmd, nil // nothing to switch, or not privileged to switch
+	}
+	u, err := user.Lookup(e.OSUser)
+	if err != nil {
+		return nil, fmt.Errorf("pgbin: lookup os_user %q: %w", e.OSUser, err)
+	}
+	cred, err := credential(u)
+	if err != nil {
+		return nil, err
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+	// PG tools consult HOME/USER (e.g. for .pgpass); point them at the target user.
+	cmd.Env = append(os.Environ(), "HOME="+u.HomeDir, "USER="+e.OSUser, "LOGNAME="+e.OSUser)
+	return cmd, nil
+}
+
+// credential converts a resolved OS user into a syscall credential (uid/gid).
+func credential(u *user.User) (*syscall.Credential, error) {
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return nil, fmt.Errorf("pgbin: parse uid %q: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return nil, fmt.Errorf("pgbin: parse gid %q: %w", u.Gid, err)
+	}
+	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}, nil
+}
 
 // OldControlData reads pg_controldata with the OLD bindir (pre-upgrade cluster).
 func (e Exec) OldControlData(ctx context.Context, dataDir string) (*ControlData, error) {
@@ -59,7 +106,11 @@ func (e Exec) NewControlData(ctx context.Context, dataDir string) (*ControlData,
 }
 
 func (e Exec) controlData(ctx context.Context, bindir, dataDir string) (*ControlData, error) {
-	out, err := exec.CommandContext(ctx, e.bin(bindir, "pg_controldata"), "-D", dataDir).Output()
+	cmd, err := e.command(ctx, e.bin(bindir, "pg_controldata"), "-D", dataDir)
+	if err != nil {
+		return nil, err
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("pgbin: pg_controldata: %w", err)
 	}
@@ -67,34 +118,58 @@ func (e Exec) controlData(ctx context.Context, bindir, dataDir string) (*Control
 }
 
 func (e Exec) Promote(ctx context.Context, dataDir string) error {
-	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "promote", "-w", "-D", dataDir), "promote")
+	cmd, err := e.command(ctx, e.bin(e.OldBindir, "pg_ctl"), "promote", "-w", "-D", dataDir)
+	if err != nil {
+		return err
+	}
+	return run(cmd, "promote")
 }
 
 func (e Exec) StopClean(ctx context.Context, dataDir string) error {
-	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "stop", "-m", "fast", "-D", dataDir), "stop")
+	cmd, err := e.command(ctx, e.bin(e.OldBindir, "pg_ctl"), "stop", "-m", "fast", "-D", dataDir)
+	if err != nil {
+		return err
+	}
+	return run(cmd, "stop")
 }
 
 // Restart stops (fast) and starts the cluster, waiting for readiness. Used to
 // apply a primary_conninfo change on PG < 13 where it is not reloadable.
 func (e Exec) Restart(ctx context.Context, dataDir string) error {
-	return run(exec.CommandContext(ctx, e.bin(e.OldBindir, "pg_ctl"), "restart", "-m", "fast", "-w", "-D", dataDir), "restart")
+	cmd, err := e.command(ctx, e.bin(e.OldBindir, "pg_ctl"), "restart", "-m", "fast", "-w", "-D", dataDir)
+	if err != nil {
+		return err
+	}
+	return run(cmd, "restart")
 }
 
 // Start launches a stopped cluster with the given bindir's pg_ctl, waiting for
 // readiness. Used to bring PG17 up after pg_upgrade for the catchup subscription.
 func (e Exec) Start(ctx context.Context, bindir, dataDir string) error {
-	return run(exec.CommandContext(ctx, e.bin(bindir, "pg_ctl"), "start", "-w", "-D", dataDir), "start")
+	cmd, err := e.command(ctx, e.bin(bindir, "pg_ctl"), "start", "-w", "-D", dataDir)
+	if err != nil {
+		return err
+	}
+	return run(cmd, "start")
 }
 
 func (e Exec) UpgradeCheck(ctx context.Context, o UpgradeOptions) error {
-	return run(e.upgradeCmd(ctx, o, true), "pg_upgrade --check")
+	cmd, err := e.upgradeCmd(ctx, o, true)
+	if err != nil {
+		return err
+	}
+	return run(cmd, "pg_upgrade --check")
 }
 
 func (e Exec) Upgrade(ctx context.Context, o UpgradeOptions) error {
-	return run(e.upgradeCmd(ctx, o, false), "pg_upgrade --link")
+	cmd, err := e.upgradeCmd(ctx, o, false)
+	if err != nil {
+		return err
+	}
+	return run(cmd, "pg_upgrade --link")
 }
 
-func (e Exec) upgradeCmd(ctx context.Context, o UpgradeOptions, check bool) *exec.Cmd {
+func (e Exec) upgradeCmd(ctx context.Context, o UpgradeOptions, check bool) (*exec.Cmd, error) {
 	args := []string{
 		"--old-bindir", o.OldBindir, "--new-bindir", o.NewBindir,
 		"--old-datadir", o.OldDataDir, "--new-datadir", o.NewDataDir,
@@ -103,7 +178,16 @@ func (e Exec) upgradeCmd(ctx context.Context, o UpgradeOptions, check bool) *exe
 	if check {
 		args = append(args, "--check")
 	}
-	return exec.CommandContext(ctx, e.bin(o.NewBindir, "pg_upgrade"), args...)
+	cmd, err := e.command(ctx, e.bin(o.NewBindir, "pg_upgrade"), args...)
+	if err != nil {
+		return nil, err
+	}
+	// pg_upgrade writes its output (pg_upgrade_output.d / log files) to the working
+	// directory; run it from a directory the target user can write to, when given.
+	if o.WorkDir != "" {
+		cmd.Dir = o.WorkDir
+	}
+	return cmd, nil
 }
 
 func run(cmd *exec.Cmd, label string) error {

@@ -34,6 +34,7 @@ func (d Deps) upgradeOpts() pgbin.UpgradeOptions {
 		NewBindir:  d.Cfg.Upgrade.NewPGBindir,
 		OldDataDir: d.Cfg.Upgrade.DataDir,
 		NewDataDir: d.Cfg.Upgrade.NewDataDir,
+		WorkDir:    d.Cfg.Upgrade.PgUpgradeLogDir,
 	}
 }
 

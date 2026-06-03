@@ -180,7 +180,7 @@ func runCmd(cfgPath *string) *cobra.Command {
 				Cfg:         *cfg,
 				Mgr:         mgr,
 				Patroni:     patClient,
-				Tools:       pgbin.Exec{NewBindir: cfg.Upgrade.NewPGBindir, OldBindir: cfg.Upgrade.OldPGBindir},
+				Tools:       pgbin.Exec{NewBindir: cfg.Upgrade.NewPGBindir, OldBindir: cfg.Upgrade.OldPGBindir, OSUser: cfg.PG.OSUser},
 				N1:          n1,
 				Primary:     primaryProvider,
 				Drain:       slotdrain.Drain,

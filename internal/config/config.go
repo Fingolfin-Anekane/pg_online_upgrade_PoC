@@ -46,6 +46,10 @@ type UpgradeConfig struct {
 
 type PGConfig struct {
 	SuperuserDSN string `yaml:"superuser_dsn"`
+	// OSUser is the OS account that owns the data directory and under which the PG
+	// CLI tools (pg_ctl, pg_upgrade, pg_controldata) must run — they refuse to run
+	// as root. Used only when the orchestrator itself runs as root.
+	OSUser string `yaml:"os_user"`
 }
 
 func Load(path string) (*Config, error) {
