@@ -54,12 +54,16 @@ func TestGetCluster_NoLeader(t *testing.T) {
 	assert.Nil(t, cluster.Leader())
 }
 
-func TestPause_SendsPutRequest(t *testing.T) {
+// Patroni has no /pause endpoint: maintenance mode is toggled via the dynamic
+// config (PATCH /config {"pause": true|false}), the same path patronictl uses.
+func TestPause_PatchesConfigPauseTrue(t *testing.T) {
 	var called bool
+	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		assert.Equal(t, "PUT", r.Method)
-		assert.Equal(t, "/pause", r.URL.Path)
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/config", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -68,14 +72,17 @@ func TestPause_SendsPutRequest(t *testing.T) {
 	err := c.Pause(context.Background())
 	require.NoError(t, err)
 	assert.True(t, called)
+	assert.Equal(t, true, body["pause"])
 }
 
-func TestResume_SendsPutRequest(t *testing.T) {
+func TestResume_PatchesConfigPauseFalse(t *testing.T) {
 	var called bool
+	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		assert.Equal(t, "PUT", r.Method)
-		assert.Equal(t, "/resume", r.URL.Path)
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/config", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -84,6 +91,7 @@ func TestResume_SendsPutRequest(t *testing.T) {
 	err := c.Resume(context.Background())
 	require.NoError(t, err)
 	assert.True(t, called)
+	assert.Equal(t, false, body["pause"])
 }
 
 func TestGetCluster_ServerError(t *testing.T) {
