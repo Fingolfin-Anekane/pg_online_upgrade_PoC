@@ -19,7 +19,7 @@ func NewCatchup(d Deps) runner.Phase {
 		id: "catchup",
 		steps: []runner.Step{
 			&verifyOldClusterStopped{d},
-			&verifyNewPatroniConfig{d},
+			&patchNewPatroniConfig{d},
 			&startPG17{d},
 			&createForwardSubscription{d},
 			&waitLagZero{d},
@@ -54,39 +54,66 @@ func (s *verifyOldClusterStopped) Run(ctx context.Context) error {
 	return nil
 }
 
-// --- VerifyNewPatroniConfig: fail fast on a misconfigured new-cluster patroni.yml ---
+// --- PatchNewPatroniConfig: rewrite the new-cluster patroni.yml for PG17 ---
 //
-// The upgraded PG17 cluster has a NEW system identifier. Patroni will refuse to
-// start ("system ID mismatch") if pointed at the old cluster's scope, whose DCS
-// /initialize key still holds the old sysid. So the new cluster's patroni.yml
-// must declare a fresh scope and the upgraded data_dir. We verify that before
-// starting Patroni, turning a cryptic mismatch into a clear error.
+// The upgraded PG17 cluster has a NEW system identifier and lives in a new data
+// dir. Patroni will refuse to start ("system ID mismatch") under the old scope,
+// and would manage the new data dir with the old binaries if bin_dir still
+// points at the old major. So before starting Patroni we patch the new
+// cluster's patroni.yml in place: scope -> EffectiveNewScope (default
+// "<cluster_name>-17"), postgresql.data_dir -> new_data_dir, postgresql.bin_dir
+// -> new_pg_bindir, and postgresql.config_dir -> new_config_dir when set. The
+// operator's original is preserved once as <path>.bak.
+type patchNewPatroniConfig struct{ d Deps }
 
-type verifyNewPatroniConfig struct{ d Deps }
-
-func (s *verifyNewPatroniConfig) ID() runner.StepID                   { return "VerifyNewPatroniConfig" }
-func (s *verifyNewPatroniConfig) Check(context.Context) (bool, error) { return false, nil } // always verify (cheap)
-func (s *verifyNewPatroniConfig) Run(_ context.Context) error {
+func (s *patchNewPatroniConfig) ID() runner.StepID { return "PatchNewPatroniConfig" }
+func (s *patchNewPatroniConfig) Check(_ context.Context) (bool, error) {
+	data, err := os.ReadFile(s.d.Cfg.Upgrade.PatroniConfigPath)
+	if err != nil {
+		return false, fmt.Errorf("catchup: read new-cluster patroni config %s: %w", s.d.Cfg.Upgrade.PatroniConfigPath, err)
+	}
+	cur, err := parsePatroniManagedFields(data)
+	if err != nil {
+		return false, err
+	}
+	if cur.Scope != s.d.Cfg.EffectiveNewScope() {
+		return false, nil
+	}
+	if cur.DataDir != s.d.Cfg.Upgrade.NewDataDir {
+		return false, nil
+	}
+	if cur.BinDir != s.d.Cfg.Upgrade.NewPGBindir {
+		return false, nil
+	}
+	if s.d.Cfg.Upgrade.NewConfigDir != "" && cur.ConfigDir != s.d.Cfg.Upgrade.NewConfigDir {
+		return false, nil
+	}
+	return true, nil
+}
+func (s *patchNewPatroniConfig) Run(_ context.Context) error {
 	path := s.d.Cfg.Upgrade.PatroniConfigPath
+	scope := s.d.Cfg.EffectiveNewScope()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("catchup: read new-cluster patroni config %s: %w", path, err)
 	}
-	scope, dataDir, err := parsePatroniScopeDataDir(data)
+	// Preserve the operator's original once; never clobber an existing backup.
+	bak := path + ".bak"
+	if _, statErr := os.Stat(bak); os.IsNotExist(statErr) {
+		if err := os.WriteFile(bak, data, 0o644); err != nil {
+			return fmt.Errorf("catchup: write patroni config backup %s: %w", bak, err)
+		}
+	}
+	s.d.logf("патчу новый patroni.yml %s: scope=%q, data_dir=%q, bin_dir=%q, config_dir=%q...",
+		path, scope, s.d.Cfg.Upgrade.NewDataDir, s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewConfigDir)
+	patched, err := patchPatroniConfig(data, scope, s.d.Cfg.Upgrade.NewDataDir, s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewConfigDir)
 	if err != nil {
 		return err
 	}
-	// scope/data_dir may be set via env rather than the file; only enforce what
-	// the file actually declares to avoid false positives.
-	if scope != "" && scope == s.d.Cfg.ClusterName {
-		return fmt.Errorf("catchup: new-cluster patroni scope %q must differ from the old cluster %q — reusing it makes Patroni refuse to start (system ID mismatch: the upgraded cluster has a new sysid). Use a fresh scope (e.g. %q-17) and rename it to %q in finalize",
-			scope, s.d.Cfg.ClusterName, s.d.Cfg.ClusterName, s.d.Cfg.ClusterName)
+	if err := os.WriteFile(path, patched, 0o644); err != nil {
+		return fmt.Errorf("catchup: write patched patroni config %s: %w", path, err)
 	}
-	if dataDir != "" && dataDir != s.d.Cfg.Upgrade.NewDataDir {
-		return fmt.Errorf("catchup: new-cluster patroni postgresql.data_dir %q must match upgrade.new_data_dir %q", dataDir, s.d.Cfg.Upgrade.NewDataDir)
-	}
-	s.d.logf("конфиг нового Patroni ок: scope=%q (≠ старого %q), data_dir=%q; PG17 sysid=%s",
-		scope, s.d.Cfg.ClusterName, dataDir, s.d.Mgr.Get().Artifacts.PG17SYSID)
+	s.d.logf("новый patroni.yml приведён к PG17 (оригинал сохранён в %s)", bak)
 	return nil
 }
 
@@ -231,7 +258,7 @@ func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
 
 var (
 	_ runner.Step = (*verifyOldClusterStopped)(nil)
-	_ runner.Step = (*verifyNewPatroniConfig)(nil)
+	_ runner.Step = (*patchNewPatroniConfig)(nil)
 	_ runner.Step = (*startPG17)(nil)
 	_ runner.Step = (*createForwardSubscription)(nil)
 	_ runner.Step = (*waitLagZero)(nil)
