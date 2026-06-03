@@ -134,6 +134,41 @@ func TestValidateForRun(t *testing.T) {
 	assert.ErrorContains(t, cfg2.ValidateForRun(), "new_data_dir must differ")
 }
 
+func validRunConfig() config.Config {
+	return config.Config{
+		ClusterName: "prod-pg",
+		Upgrade: config.UpgradeConfig{
+			TargetNode: "n1", SlotName: "s", PublicationName: "p",
+			NewPGBindir: "/new/bin", OldPGBindir: "/old/bin",
+			DataDir: "/data/old", NewDataDir: "/data/new",
+			PatroniConfigPath: "/etc/patroni.yml", SubscriptionName: "sub",
+			ReversePubName: "rpub", ReverseSubName: "rsub", DBName: "appdb",
+			PG17DSN: "host=h dbname=appdb", NewPatroniURL: "http://h:8008",
+			DSNSwapSignalPath: "/run/swap.json", SequenceBuffer: 1000,
+			PgUpgradeLogDir: "/var/log/pgu", LogArchiveDir: "/var/log/arch",
+		},
+		PG: config.PGConfig{SuperuserDSN: "host=h dbname=appdb"},
+	}
+}
+
+func TestEffectiveNewScope_DefaultDerivesFromClusterName(t *testing.T) {
+	c := config.Config{ClusterName: "prod-pg"}
+	assert.Equal(t, "prod-pg-17", c.EffectiveNewScope())
+}
+
+func TestEffectiveNewScope_UsesConfiguredValue(t *testing.T) {
+	c := config.Config{ClusterName: "prod-pg", Upgrade: config.UpgradeConfig{NewScope: "pg17-cluster"}}
+	assert.Equal(t, "pg17-cluster", c.EffectiveNewScope())
+}
+
+func TestValidateForRun_RejectsNewScopeEqualToClusterName(t *testing.T) {
+	c := validRunConfig()
+	c.Upgrade.NewScope = c.ClusterName
+	err := c.ValidateForRun()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "new_scope")
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp("", "pg-upgrade-*.yaml")

@@ -59,6 +59,18 @@ type UpgradeConfig struct {
 	// otherwise (so you can stop it manually) — useful where auto-stopping is
 	// risky (e.g. Patroni as PID 1 in a k8s pod shared with the orchestrator).
 	OldPatroniStopCommand string `yaml:"old_patroni_stop_command"`
+	// NewScope is the DCS scope (Patroni cluster name) the upgraded PG17 cluster
+	// runs under. It MUST differ from cluster_name: the upgraded cluster has a new
+	// system identifier, and reusing the old scope makes Patroni refuse to start
+	// with a system-ID mismatch. Empty defaults to "<cluster_name>-17" (see
+	// Config.EffectiveNewScope). The catchup PatchNewPatroniConfig step writes it
+	// into the new cluster's patroni.yml.
+	NewScope string `yaml:"new_scope"`
+	// NewConfigDir is the PG17 config_dir written into the new cluster's
+	// patroni.yml (postgresql.config_dir). Empty means leave config_dir untouched
+	// (Patroni defaults config_dir to data_dir). There is no safe default path, so
+	// it is only patched when set.
+	NewConfigDir string `yaml:"new_config_dir"`
 }
 
 type PGConfig struct {
@@ -76,6 +88,15 @@ const DefaultOSUser = "postgres"
 // DefaultPatroniStart is the command used to bring up Patroni when
 // upgrade.patroni_start_command is not set.
 const DefaultPatroniStart = "systemctl start patroni"
+
+// EffectiveNewScope is the DCS scope for the upgraded PG17 cluster: the
+// explicit upgrade.new_scope when set, otherwise "<cluster_name>-17".
+func (c Config) EffectiveNewScope() string {
+	if c.Upgrade.NewScope != "" {
+		return c.Upgrade.NewScope
+	}
+	return c.ClusterName + "-17"
+}
 
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -157,6 +178,9 @@ func (c *Config) ValidateForRun() error {
 	}
 	if u.SequenceBuffer <= 0 {
 		return fmt.Errorf("config: sequence_buffer must be positive (got %d)", u.SequenceBuffer)
+	}
+	if c.EffectiveNewScope() == c.ClusterName {
+		return fmt.Errorf("config: upgrade.new_scope must differ from cluster_name %q (the upgraded cluster has a new system identifier; reusing the scope makes Patroni refuse to start)", c.ClusterName)
 	}
 	return nil
 }
