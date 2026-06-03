@@ -194,7 +194,10 @@ func runCmd(cfgPath *string) *cobra.Command {
 				cp = runner.InteractiveCheckpoint(os.Stdin, os.Stdout, runner.DefaultPrompts())
 			}
 
-			r := runner.New(phases.Phases1to8(d), mgr, mode, cp)
+			log := runner.NewConsoleLogger(os.Stdout)
+			d.Log = log
+
+			r := runner.New(phases.Phases1to8(d), mgr, mode, cp, log)
 			if err := r.Run(ctx); err != nil {
 				return err
 			}

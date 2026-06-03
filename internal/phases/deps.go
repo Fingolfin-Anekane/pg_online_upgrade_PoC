@@ -9,6 +9,7 @@ import (
 	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
+	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/dmbabuev/pg-upgrade/internal/slotdrain"
 	"github.com/dmbabuev/pg-upgrade/internal/state"
 )
@@ -39,4 +40,16 @@ type Deps struct {
 
 	// WriteSignal persists the DSN-swap signal file (injected for testability).
 	WriteSignal func(path string, data []byte) error
+
+	// Log receives parameter-level progress lines emitted from within steps. It
+	// may be nil (tests construct Deps without it); use logf, which nil-guards.
+	Log runner.Logger
+}
+
+// logf emits an indented detail line under the current step. It is a no-op when
+// no logger was injected, so steps can call it unconditionally.
+func (d Deps) logf(format string, args ...any) {
+	if d.Log != nil {
+		d.Log.Detail(format, args...)
+	}
 }

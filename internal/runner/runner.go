@@ -18,16 +18,21 @@ type Runner struct {
 	mgr    *state.Manager
 	mode   RunMode
 	cp     Checkpoint
+	log    Logger
 }
 
 // New builds a Runner from a phase list (indexed by ID), a state Manager, a run
-// mode, and a checkpoint (used only in Interactive mode).
-func New(phases []Phase, mgr *state.Manager, mode RunMode, cp Checkpoint) *Runner {
+// mode, a checkpoint (used only in Interactive mode), and a progress Logger. A
+// nil log is replaced with a no-op, so callers that don't want output pass nil.
+func New(phases []Phase, mgr *state.Manager, mode RunMode, cp Checkpoint, log Logger) *Runner {
 	idx := make(map[PhaseID]Phase, len(phases))
 	for _, p := range phases {
 		idx[p.ID()] = p
 	}
-	return &Runner{phases: idx, mgr: mgr, mode: mode, cp: cp}
+	if log == nil {
+		log = nopLogger{}
+	}
+	return &Runner{phases: idx, mgr: mgr, mode: mode, cp: cp, log: log}
 }
 
 // Run drives the FSM from state.Current until a phase has no matching transition
@@ -66,26 +71,33 @@ func (r *Runner) Run(ctx context.Context) error {
 // executePhase runs each step that Check() reports as not-yet-done, persisting
 // per-step status. A failing step stops the phase.
 func (r *Runner) executePhase(ctx context.Context, phase Phase) error {
+	r.log.PhaseStart(phase.ID())
 	for _, step := range phase.Steps() {
 		done, err := step.Check(ctx)
 		if err != nil {
+			r.log.StepResult(phase.ID(), step.ID(), StepFailed)
 			_ = r.mgr.FailStep(phase.ID(), step.ID(), err.Error())
 			return fmt.Errorf("runner: %s/%s check: %w", phase.ID(), step.ID(), err)
 		}
 		if done {
+			r.log.StepResult(phase.ID(), step.ID(), StepSkipped)
 			if err := r.mgr.SkipStep(phase.ID(), step.ID()); err != nil {
 				return err
 			}
 			continue
 		}
+		r.log.StepStart(phase.ID(), step.ID())
 		if err := step.Run(ctx); err != nil {
+			r.log.StepResult(phase.ID(), step.ID(), StepFailed)
 			_ = r.mgr.FailStep(phase.ID(), step.ID(), err.Error())
 			return fmt.Errorf("runner: %s/%s run: %w", phase.ID(), step.ID(), err)
 		}
+		r.log.StepResult(phase.ID(), step.ID(), StepDone)
 		if err := r.mgr.CompleteStep(phase.ID(), step.ID()); err != nil {
 			return err
 		}
 	}
+	r.log.PhaseDone(phase.ID())
 	return nil
 }
 

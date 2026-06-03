@@ -1,0 +1,79 @@
+# pg-upgrade configuration stub.
+#
+# Copy to pg-upgrade.yaml (the default --config / -c path) and fill in.
+# Field groups below are tagged by which command needs them:
+#   [base]  — validated on every Load() (drain-slot/status and run)
+#   [run]   — additionally required by `pg-upgrade run` (ValidateForRun)
+
+# Logical name of the OLD Patroni cluster being upgraded (the scope/namespace
+# in DCS). The run binds its state file to this name. [base]
+cluster_name: prod-pg
+
+upgrade:
+  # --- topology ----------------------------------------------------------
+  # Name of the local node the agent runs on — the replica that becomes the
+  # PG17 baseline (promoted, then pg_upgrade'd in place). [run]
+  target_node: pg-node-1
+
+  # --- logical replication: forward (old -> new) -------------------------
+  # Replication slot drained during Drain and reused (create_slot=false) by the
+  # forward subscription. Created on the old primary in Prepare. [base]
+  slot_name: upgrade_slot
+  # Publication on the old primary feeding the forward subscription. [base]
+  publication_name: upgrade_pub
+  # Forward subscription created on the PG17 cluster (reuses slot_name). [run]
+  subscription_name: upgrade_sub
+
+  # --- logical replication: reverse (new -> old, rollback safety) ---------
+  # Publication on PG17 and subscription on the old primary. Torn down in
+  # Finalize once the cutover is committed. [run]
+  reverse_pub_name: rollback_pub
+  reverse_sub_name: rollback_sub
+
+  # --- binaries & data dirs (pg_upgrade, on target_node) -----------------
+  # New-version binaries (e.g. PG17). Required by base validation. [base]
+  new_pg_bindir: /usr/lib/postgresql/17/bin
+  # Old-version binaries (the cluster's current major). [run]
+  old_pg_bindir: /usr/lib/postgresql/14/bin
+  # Current data directory (old cluster). [run]
+  data_dir: /var/lib/postgresql/14/main
+  # Target data directory for the upgraded cluster — MUST differ from data_dir.
+  # [run]
+  new_data_dir: /var/lib/postgresql/17/main
+
+  # Patroni config file on target_node that gets rewritten to the final
+  # (PG17) layout during Upgrade. [run]
+  patroni_config_path: /etc/patroni/patroni.yml
+
+  # --- new cluster endpoints ---------------------------------------------
+  # Superuser DSN to the new PG17 cluster (Catchup/Switchover/Finalize talk to
+  # it). dbname in the DSN must match `dbname` below. [run]
+  pg17_dsn: "host=pg17-vip port=5432 user=postgres dbname=appdb sslmode=require"
+  # Patroni REST API base URL of the NEW cluster (leader/health checks). [run]
+  new_patroni_url: "http://pg17-node-1:8008"
+
+  # Application database upgraded (freeze/unfreeze + sequence sync target).
+  # Must equal the dbname encoded in pg17_dsn. [run]
+  dbname: appdb
+
+  # --- cutover signalling -------------------------------------------------
+  # File the binary writes to signal the operator/proxy to swap the live DSN to
+  # the new primary (in-flight SIGHUP-style swap). [run]
+  dsn_swap_signal_path: /var/run/pg-upgrade/dsn-swap.json
+
+  # Headroom added to each sequence's last_value when synced onto PG17, so the
+  # new cluster never reissues a value the old one already handed out. Must be
+  # > 0. [run]
+  sequence_buffer: 1000
+
+  # --- cleanup (phase 8) --------------------------------------------------
+  # pg_upgrade's output/log directory on target_node. [run]
+  pg_upgrade_log_dir: /var/lib/postgresql/pg_upgrade_output.d
+  # Where those logs are archived before the old cluster is decommissioned.
+  # [run]
+  log_archive_dir: /var/log/pg-upgrade/archive
+
+pg:
+  # Superuser DSN to the LOCAL node (target_node) the agent drives directly:
+  # promote, freeze triggers, slot ops. [base]
+  superuser_dsn: "host=/var/run/postgresql port=5432 user=postgres dbname=appdb"
