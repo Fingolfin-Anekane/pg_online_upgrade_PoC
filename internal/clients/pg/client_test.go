@@ -102,6 +102,32 @@ func TestGetReplicationSlot_NotExists(t *testing.T) {
 	assert.Nil(t, slot)
 }
 
+func TestCreateLogicalSlot_ReadsBackFromCatalog(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	// pg_create_logical_replication_slot() returns only (slot_name, lsn), so the
+	// create is a plain Exec; the restart/confirmed_flush LSNs come from a
+	// follow-up read of pg_replication_slots.
+	mock.ExpectExec("SELECT pg_create_logical_replication_slot").
+		WithArgs("slot_upgrade", "pgoutput").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text").
+		WithArgs("slot_upgrade").
+		WillReturnRows(pgxmock.NewRows([]string{"slot_name", "restart_lsn", "confirmed_flush_lsn"}).
+			AddRow("slot_upgrade", "0/1A000000", "0/1A000100"))
+
+	c := pgclient.NewFromPool(mock)
+	slot, err := c.CreateLogicalSlot(context.Background(), "slot_upgrade", "pgoutput")
+	require.NoError(t, err)
+	require.NotNil(t, slot)
+	assert.Equal(t, "slot_upgrade", slot.Name)
+	assert.Equal(t, "0/1A000000", slot.RestartLSN)
+	assert.Equal(t, "0/1A000100", slot.ConfirmedFlushLSN)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestCreateSubscription_EscapesSingleQuotes(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)

@@ -184,12 +184,21 @@ func (c *internalClient) GetReplicationSlot(ctx context.Context, name string) (*
 }
 
 func (c *internalClient) CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error) {
-	var s ReplicationSlot
-	err := c.q.QueryRow(ctx,
-		"SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text "+
-			"FROM pg_create_logical_replication_slot($1, $2)", name, plugin).
-		Scan(&s.Name, &s.RestartLSN, &s.ConfirmedFlushLSN)
-	return &s, err
+	// pg_create_logical_replication_slot() returns only (slot_name, lsn) — it has
+	// no restart_lsn/confirmed_flush_lsn columns. Create the slot, then read its
+	// full state back from pg_replication_slots (same shape as GetReplicationSlot).
+	if _, err := c.q.Exec(ctx,
+		"SELECT pg_create_logical_replication_slot($1, $2)", name, plugin); err != nil {
+		return nil, err
+	}
+	slot, err := c.GetReplicationSlot(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if slot == nil {
+		return nil, fmt.Errorf("slot %q not found after creation", name)
+	}
+	return slot, nil
 }
 
 func (c *internalClient) CreatePublication(ctx context.Context, name string) error {
