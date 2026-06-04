@@ -87,6 +87,15 @@ func initCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("init: %d accounts seeded with balance %d\n", cfg.Accounts, cfg.Balance)
+			if reset {
+				// The reset TRUNCATEd the DB; clear the append-only intent-log too,
+				// else verify reconciles prior runs' records against the wiped DB and
+				// reports false LOST/PHANTOM.
+				if err := loadgen.TruncateIntentLog(cfg.IntentLog); err != nil {
+					return err
+				}
+				fmt.Printf("init: intent-log %s truncated\n", cfg.IntentLog)
+			}
 			return nil
 		},
 	}

@@ -27,6 +27,8 @@ dsn_b: "host=pg17-vip port=5432 user=postgres password=change-me dbname=appdb ss
 
 # Durable append-only intent-log. `run` writes it, `verify` reads it. Keep it on
 # a path that survives the run (not a tmpfs that the swap/restart may clear).
+# It accumulates across runs; `init --reset` truncates it (along with the DB) so
+# verify doesn't reconcile a prior run's records against the wiped tables.
 intent_log: "loadtool-intent.jsonl"
 
 # --- workload sizing -----------------------------------------------------

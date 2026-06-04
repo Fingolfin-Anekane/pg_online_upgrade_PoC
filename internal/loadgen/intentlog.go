@@ -47,6 +47,21 @@ type Writer struct {
 	out io.Writer
 }
 
+// TruncateIntentLog empties the intent-log at path (creating it if absent) so a
+// fresh run started after `init --reset` does not leave stale records from prior
+// runs. The log is append-only across runs, and `verify` reconciles the WHOLE
+// file against the (just-truncated) DB; without this, rows wiped by the reset
+// surface as false LOST/PHANTOM. An empty path is a no-op.
+func TruncateIntentLog(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		return fmt.Errorf("intentlog truncate %s: %w", path, err)
+	}
+	return nil
+}
+
 // NewWriter opens (creates/appends) the intent-log file and tees a human stream.
 func NewWriter(path string, stdout io.Writer) (*Writer, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)

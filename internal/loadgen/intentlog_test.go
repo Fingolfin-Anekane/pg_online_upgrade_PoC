@@ -78,3 +78,18 @@ func TestWriterConcurrentWritesAreWellFormed(t *testing.T) {
 	recs := readRecords(t, path)
 	assert.Len(t, recs, workers*iters*2) // every line parsed cleanly => no interleaving
 }
+
+func TestTruncateIntentLogEmptiesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "intent.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte("{\"op_id\":\"a\"}\n{\"op_id\":\"b\"}\n"), 0o644))
+
+	require.NoError(t, TruncateIntentLog(path))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Empty(t, data, "intent-log must be emptied so verify can't reconcile stale runs")
+}
+
+func TestTruncateIntentLogNoopOnEmptyPath(t *testing.T) {
+	require.NoError(t, TruncateIntentLog(""))
+}
