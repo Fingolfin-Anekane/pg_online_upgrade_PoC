@@ -105,6 +105,40 @@ func TestRYWOnceReadsBackMaxSeq(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestResumeSeqReturnsPersistedMax(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectQuery(`SELECT COALESCE\(MAX\(client_seq\), 0\) FROM events WHERE writer_id`).WithArgs(1000).
+		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow(int64(42)))
+
+	got := resumeSeq(context.Background(), mock, 1000)
+	assert.Equal(t, int64(42), got)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeSeqZeroOnEmptyTable(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectQuery(`SELECT COALESCE\(MAX\(client_seq\), 0\)`).WithArgs(1000).
+		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow(int64(0)))
+
+	assert.Equal(t, int64(0), resumeSeq(context.Background(), mock, 1000))
+}
+
+func TestResumeSeqZeroOnQueryError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectQuery(`SELECT COALESCE`).WithArgs(1000).WillReturnError(errors.New("boom"))
+
+	// Best-effort: an unreachable/missing table must not crash and must not
+	// resurrect the duplicate-key bug by starting below real rows; 0 is safe on a
+	// fresh table, and on a populated+reachable table the query succeeds.
+	assert.Equal(t, int64(0), resumeSeq(context.Background(), mock, 1000))
+}
+
 func TestAppendOnceIndoubtOnNetworkError(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)

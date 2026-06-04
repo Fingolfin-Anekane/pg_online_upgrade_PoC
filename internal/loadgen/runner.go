@@ -27,7 +27,11 @@ func throttle(rate int) (<-chan time.Time, func()) {
 func appendLoop(ctx context.Context, sel *Selector, w *Writer, m *Metrics, writerID, rate int) int64 {
 	tick, stop := throttle(rate)
 	defer stop()
-	var seq, count int64
+	// Resume past any rows this writer already persisted (restart safety): the
+	// active pool at start is the old primary, whose events also replicate to B.
+	startPool, _, _ := sel.Active()
+	seq := resumeSeq(ctx, startPool, writerID)
+	var count int64
 	for {
 		select {
 		case <-ctx.Done():
@@ -52,7 +56,9 @@ func appendLoop(ctx context.Context, sel *Selector, w *Writer, m *Metrics, write
 func rywLoop(ctx context.Context, sel *Selector, w *Writer, m *Metrics, writerID, rate int) int64 {
 	tick, stop := throttle(rate)
 	defer stop()
-	var seq, count int64
+	startPool, _, _ := sel.Active()
+	seq := resumeSeq(ctx, startPool, writerID)
+	var count int64
 	for {
 		select {
 		case <-ctx.Done():
@@ -104,7 +110,9 @@ func transferLoop(ctx context.Context, sel *Selector, m *Metrics, accounts, rate
 }
 
 func longTxnLoop(ctx context.Context, sel *Selector, w *Writer, m *Metrics, writerID int, batchSize int, hold time.Duration) int64 {
-	var startSeq, count int64
+	startPool, _, _ := sel.Active()
+	startSeq := resumeSeq(ctx, startPool, writerID)
+	var count int64
 	for {
 		select {
 		case <-ctx.Done():

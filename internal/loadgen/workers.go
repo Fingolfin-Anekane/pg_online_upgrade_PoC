@@ -10,7 +10,21 @@ import (
 const (
 	insertEvent        = `INSERT INTO events (writer_id, client_seq, batch_id, payload) VALUES ($1, $2, $3, $4)`
 	insertEventNoBatch = `INSERT INTO events (writer_id, client_seq, payload) VALUES ($1, $2, $3)`
+	maxClientSeq       = `SELECT COALESCE(MAX(client_seq), 0) FROM events WHERE writer_id = $1`
 )
+
+// resumeSeq returns the highest client_seq already persisted for writerID (0 if
+// none), so a restarted worker continues past existing rows instead of colliding
+// on the UNIQUE (writer_id, client_seq) constraint. writerID ranges are stable
+// across runs while the in-memory counter restarts at 0, so without this a
+// re-run replays seq 1,2,3… onto rows the prior run already wrote (SQLSTATE
+// 23505). Best-effort: on a query error it returns 0 — a fresh/just-reset table
+// reads 0 anyway, and an unreachable DB fails every write regardless.
+func resumeSeq(ctx context.Context, db Pool, writerID int) int64 {
+	var maxSeq int64
+	_ = db.QueryRow(ctx, maxClientSeq, writerID).Scan(&maxSeq)
+	return maxSeq
+}
 
 // appendOnce inserts one event row in autocommit and logs the op. Returns the
 // resolved status and the error class ("" when acked) for live metrics.
