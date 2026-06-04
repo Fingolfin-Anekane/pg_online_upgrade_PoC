@@ -7,9 +7,19 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/jackc/pglogrepl"
+)
+
+// How long PausePatroni waits for the node to actually apply maintenance mode
+// after the PATCH, and how often it polls. The default Patroni loop_wait is 10s,
+// so 30s leaves room for a couple of HA cycles.
+const (
+	pauseApplyTimeout  = 30 * time.Second
+	pauseApplyInterval = 1 * time.Second
 )
 
 // NewIsolate builds Phase 2: disconnect N1 from WAL and record the physical
@@ -44,27 +54,53 @@ type pausePatroni struct{ d Deps }
 func (s *pausePatroni) ID() runner.StepID { return "PausePatroni" }
 func (s *pausePatroni) Check(ctx context.Context) (bool, error) {
 	// Once StopPatroniOnN1 has run, N1's Patroni REST (localhost:8008) is down, so
-	// GetCluster would error on re-entry. The pause was already applied before the
-	// stop, so treat this step as done.
+	// any REST call would error on re-entry. The pause was already applied before
+	// the stop, so treat this step as done.
 	if s.d.Mgr.Get().Artifacts.PatroniStoppedOnN1 {
 		return true, nil
 	}
-	c, err := s.d.Patroni.GetCluster(ctx)
-	if err != nil {
-		return false, err
-	}
-	if c == nil {
-		return false, nil
-	}
-	return c.Paused, nil
+	// Use the node's APPLIED maintenance state, not GetCluster().Paused (which is
+	// only the DCS flag): "done" must mean the node won't gracefully stop postgres
+	// when StopPatroniOnN1 fires.
+	return s.d.Patroni.NodePaused(ctx)
 }
 func (s *pausePatroni) Run(ctx context.Context) error {
 	s.d.logf("ставлю Patroni на паузу (отключаю автоматический failover)...")
 	if err := s.d.Patroni.Pause(ctx); err != nil {
 		return err
 	}
-	s.d.logf("Patroni на паузе")
+	// The PATCH only writes pause to DCS; the node applies maintenance mode on its
+	// next HA loop. Wait for the node to actually be paused before StopPatroniOnN1
+	// stops it — a paused node leaves postgres alone on shutdown, an un-paused one
+	// gracefully stops it (the race that killed N1's postgres).
+	s.d.logf("жду, пока нода применит maintenance mode (pause), прежде чем останавливать Patroni...")
+	wctx, cancel := context.WithTimeout(ctx, pauseApplyTimeout)
+	defer cancel()
+	if err := waitNodePaused(wctx, s.d.Patroni, pauseApplyInterval); err != nil {
+		return err
+	}
+	s.d.logf("Patroni на паузе (применено на ноде)")
 	return nil
+}
+
+// waitNodePaused polls until the Patroni node reports it has applied maintenance
+// mode, or ctx expires. Stopping Patroni before this is true risks a graceful
+// PostgreSQL shutdown.
+func waitNodePaused(ctx context.Context, p patroni.Client, interval time.Duration) error {
+	for {
+		paused, err := p.NodePaused(ctx)
+		if err != nil {
+			return err
+		}
+		if paused {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("isolate: Patroni node did not apply maintenance mode (pause) in time — stopping it now would gracefully shut down postgres; re-run: %w", ctx.Err())
+		case <-time.After(interval):
+		}
+	}
 }
 
 // --- StopPatroniOnN1: take Patroni off N1 so the WAL disconnect holds ---

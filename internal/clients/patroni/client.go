@@ -11,6 +11,7 @@ import (
 // Client is the interface used by phases to interact with Patroni.
 type Client interface {
 	GetCluster(ctx context.Context) (*ClusterInfo, error)
+	NodePaused(ctx context.Context) (bool, error)
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
 }
@@ -124,6 +125,36 @@ func (c *HTTPClient) GetCluster(ctx context.Context) (*ClusterInfo, error) {
 		return nil, fmt.Errorf("patroni /cluster decode: %w", err)
 	}
 	return &info, nil
+}
+
+// NodePaused reports whether THIS Patroni node has actually applied maintenance
+// mode, as opposed to GetCluster().Paused which only reflects the pause flag in
+// the DCS dynamic config. GET /patroni serves the node's own in-memory state,
+// which flips to paused only after its HA loop picks up the DCS change (up to
+// loop_wait later). A paused node leaves PostgreSQL alone on shutdown; an
+// un-paused one gracefully stops it — so callers must wait for this before
+// stopping Patroni. An absent "pause" field decodes as false (not yet applied).
+func (c *HTTPClient) NodePaused(ctx context.Context) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/patroni", nil)
+	if err != nil {
+		return false, err
+	}
+	c.authorize(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("patroni /patroni: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("patroni /patroni: HTTP %d", resp.StatusCode)
+	}
+	var st struct {
+		Pause bool `json:"pause"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return false, fmt.Errorf("patroni /patroni decode: %w", err)
+	}
+	return st.Pause, nil
 }
 
 // Pause puts the cluster into maintenance mode. Patroni has no /pause endpoint;

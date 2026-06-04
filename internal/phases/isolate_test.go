@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dmbabuev/pg-upgrade/internal/config"
 	"github.com/dmbabuev/pg-upgrade/internal/state"
@@ -29,7 +30,7 @@ func TestIsolateRecordsTargetLSN(t *testing.T) {
 	require.NoError(t, mgr.SetSlotBaseline(&state.SlotBaseline{ConfirmedFlushLSN: "0/10"}))
 
 	n1 := &fakePG{receivedLSN: "0/3FA20000", walRcvActive: false, replayLSN: "0/3FA20000", serverVersion: 130005}
-	pat := &fakePatroni{}
+	pat := &fakePatroni{} // not yet paused; PausePatroni.Run pauses, then the node applies it
 	d := Deps{Mgr: mgr, Patroni: pat, N1: n1}
 
 	ph := NewIsolate(d)
@@ -119,6 +120,41 @@ func TestStopPatroniOnN1NoCommandIsNoop(t *testing.T) {
 	assert.Empty(t, tools.patroniStopped)
 	// nothing was stopped, so the pause step must keep using the live REST
 	assert.False(t, mgr.Get().Artifacts.PatroniStoppedOnN1)
+}
+
+func TestWaitNodePausedReturnsWhenApplied(t *testing.T) {
+	require.NoError(t, waitNodePaused(context.Background(), &fakePatroni{nodePaused: true}, time.Millisecond))
+}
+
+func TestWaitNodePausedTimesOutWhenNeverApplied(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := waitNodePaused(ctx, &fakePatroni{nodePaused: false}, 5*time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maintenance")
+}
+
+func TestPausePatroniRunWaitsForAppliedPause(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	pat := &fakePatroni{nodePaused: true} // node already in maintenance -> wait returns at once
+	require.NoError(t, (&pausePatroni{Deps{Mgr: mgr, Patroni: pat}}).Run(context.Background()))
+	assert.True(t, pat.paused, "must PATCH pause")
+}
+
+func TestPausePatroniCheckUsesAppliedNodeState(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	// DCS may say paused, but until the NODE applies it Check must report not-done.
+	notApplied := &pausePatroni{Deps{Mgr: mgr, Patroni: &fakePatroni{nodePaused: false}}}
+	done, err := notApplied.Check(context.Background())
+	require.NoError(t, err)
+	assert.False(t, done)
+
+	applied := &pausePatroni{Deps{Mgr: mgr, Patroni: &fakePatroni{nodePaused: true}}}
+	done, err = applied.Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
 }
 
 func TestPausePatroniSkippedAfterN1PatroniStopped(t *testing.T) {

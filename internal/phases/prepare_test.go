@@ -68,16 +68,21 @@ func (f *fakePG) PublicationExists(_ context.Context, name string) (bool, error)
 
 // fakePatroni implements patroni.Client.
 type fakePatroni struct {
-	cluster *patroni.ClusterInfo
-	paused  bool
-	err     error // returned by GetCluster (e.g. to simulate an unreachable REST)
+	cluster    *patroni.ClusterInfo
+	paused     bool
+	nodePaused bool  // applied maintenance state reported by NodePaused
+	err        error // returned by GetCluster (e.g. to simulate an unreachable REST)
 }
 
 func (f *fakePatroni) GetCluster(context.Context) (*patroni.ClusterInfo, error) {
 	return f.cluster, f.err
 }
-func (f *fakePatroni) Pause(context.Context) error  { f.paused = true; return nil }
-func (f *fakePatroni) Resume(context.Context) error { f.paused = false; return nil }
+
+// NodePaused reports applied maintenance: either preset, or because Pause() was
+// called on this fake (models the node picking up the PATCH on its HA loop).
+func (f *fakePatroni) NodePaused(context.Context) (bool, error) { return f.nodePaused || f.paused, nil }
+func (f *fakePatroni) Pause(context.Context) error              { f.paused = true; return nil }
+func (f *fakePatroni) Resume(context.Context) error             { f.paused = false; return nil }
 
 func testMgr(t *testing.T) *state.Manager {
 	t.Helper()

@@ -79,6 +79,31 @@ func TestGetCluster_NoLeader(t *testing.T) {
 
 // Patroni has no /pause endpoint: maintenance mode is toggled via the dynamic
 // config (PATCH /config {"pause": true|false}), the same path patronictl uses.
+func TestNodePaused_ReadsAppliedPauseFromPatroniEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/patroni", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"state":"running","role":"replica","pause":true}`))
+	}))
+	defer srv.Close()
+
+	paused, err := patroni.NewHTTPClient(srv.URL).NodePaused(context.Background())
+	require.NoError(t, err)
+	assert.True(t, paused)
+}
+
+func TestNodePaused_FalseWhenFieldAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"state":"running","role":"replica"}`)) // not yet applied
+	}))
+	defer srv.Close()
+
+	paused, err := patroni.NewHTTPClient(srv.URL).NodePaused(context.Background())
+	require.NoError(t, err)
+	assert.False(t, paused)
+}
+
 func TestPause_PatchesConfigPauseTrue(t *testing.T) {
 	var called bool
 	var body map[string]any
