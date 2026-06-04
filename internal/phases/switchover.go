@@ -33,12 +33,25 @@ func NewSwitchover(d Deps) runner.Phase {
 	}
 }
 
+// forwardSubDisabled reports whether DisableForwardSubscription has already run.
+// Once it has, the critical section is effectively complete: the forward
+// subscription's walsender on the publisher is torn down, so the lag gate can no
+// longer observe it. The pre-disable steps must short-circuit to "done" on any
+// re-entry past this point instead of re-doing freeze/lag work that now makes no
+// sense (and would error with "no walsender ...").
+func (d Deps) forwardSubDisabled() bool { return d.Mgr.Get().Artifacts.ForwardSubDisabled }
+
 // --- FreezeOldPrimary ---
 
 type freezeOldPrimary struct{ d Deps }
 
-func (s *freezeOldPrimary) ID() runner.StepID                   { return "FreezeOldPrimary" }
-func (s *freezeOldPrimary) Check(context.Context) (bool, error) { return false, nil } // always-run; FreezeForUpgrade re-applies idempotently (DROP IF EXISTS + CREATE)
+func (s *freezeOldPrimary) ID() runner.StepID { return "FreezeOldPrimary" }
+func (s *freezeOldPrimary) Check(context.Context) (bool, error) {
+	// Re-freezing after the cutover is pointless (writes already on PG17); skip
+	// once the forward subscription has been disabled. Otherwise always-run:
+	// FreezeForUpgrade re-applies idempotently (DROP IF EXISTS + CREATE).
+	return s.d.forwardSubDisabled(), nil
+}
 func (s *freezeOldPrimary) Run(ctx context.Context) error {
 	s.d.logf("замораживаю запись на старом primary через DML-триггеры (БД %q)...", s.d.Cfg.Upgrade.DBName)
 	old, err := s.d.Primary(ctx)
@@ -56,8 +69,16 @@ func (s *freezeOldPrimary) Run(ctx context.Context) error {
 
 type waitFinalLagZero struct{ d Deps }
 
-func (s *waitFinalLagZero) ID() runner.StepID                       { return "WaitFinalLagZero" }
-func (s *waitFinalLagZero) Check(ctx context.Context) (bool, error) { return s.zero(ctx) }
+func (s *waitFinalLagZero) ID() runner.StepID { return "WaitFinalLagZero" }
+func (s *waitFinalLagZero) Check(ctx context.Context) (bool, error) {
+	// Past the cutover the forward subscription is disabled and its walsender is
+	// gone, so zero() would error "no walsender ..."; the lag was already drained
+	// to zero on the first pass, so report done.
+	if s.d.forwardSubDisabled() {
+		return true, nil
+	}
+	return s.zero(ctx)
+}
 func (s *waitFinalLagZero) Run(ctx context.Context) error {
 	s.d.logf("жду нулевого финального лага после заморозки (bytes_behind=0 на PG17)...")
 	zero, err := s.zero(ctx)
@@ -183,7 +204,10 @@ func (s *disableForwardSubscription) Run(ctx context.Context) error {
 		return err
 	}
 	s.d.logf("прямая подписка %q отключена", s.d.Cfg.Upgrade.SubscriptionName)
-	return nil
+	// Record the cutover point so a switchover re-entry short-circuits the
+	// pre-disable steps (freeze, final-lag) instead of erroring on the now-absent
+	// walsender.
+	return s.d.Mgr.SetForwardSubDisabled()
 }
 
 var (

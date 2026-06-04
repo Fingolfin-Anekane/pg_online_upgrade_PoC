@@ -127,6 +127,11 @@ func (m *Manager) SetDSNSwapNotified() error {
 	return m.persist()
 }
 
+func (m *Manager) SetForwardSubDisabled() error {
+	m.state.Artifacts.ForwardSubDisabled = true
+	return m.persist()
+}
+
 func (m *Manager) SetReverseReplSetUp() error {
 	m.state.Artifacts.ReverseReplSetUp = true
 	return m.persist()

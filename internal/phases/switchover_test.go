@@ -6,6 +6,7 @@ import (
 
 	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
+	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -65,6 +66,23 @@ func TestSwitchoverFreezeAndSyncSequences(t *testing.T) {
 	require.Len(t, pg17.setSeqs, 1)
 	assert.Equal(t, int64(1042), pg17.setSeqs[0].value) // 42 + buffer 1000
 	assert.True(t, d.Mgr.Get().Artifacts.SequencesSynced)
+}
+
+func TestWaitFinalLagZeroDoneAfterForwardDisabled(t *testing.T) {
+	// Re-entering switchover after DisableForwardSubscription already ran: the
+	// forward subscription is disabled, so its walsender on the publisher is gone
+	// and GetSubscriptionLag returns nil. The lag gate must treat the recorded
+	// ForwardSubDisabled artifact as "already past this point", not error out with
+	// "no walsender ...". Publisher reports no walsender (subLag nil).
+	d := switchoverDeps(t, &fakePG{}, &fakePG{subLag: nil})
+	require.NoError(t, d.Mgr.SetForwardSubDisabled())
+
+	// freeze and wait-final-lag must both short-circuit to done.
+	for _, s := range []runner.Step{&freezeOldPrimary{d}, &waitFinalLagZero{d}} {
+		done, err := s.Check(context.Background())
+		require.NoError(t, err, "step %s", s.ID())
+		assert.True(t, done, "step %s must be done once forward sub is disabled", s.ID())
+	}
 }
 
 func TestWaitFinalLagZeroErrorsWhenBehind(t *testing.T) {
