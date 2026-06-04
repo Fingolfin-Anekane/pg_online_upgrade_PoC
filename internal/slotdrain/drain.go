@@ -36,8 +36,13 @@ func (c *Config) Validate() error {
 
 // Report is the result of a completed drain.
 type Report struct {
-	CompletedAt         time.Time
-	FinalFlushLSN       string
+	CompletedAt   time.Time
+	FinalFlushLSN string // the target we confirmed flush at (what we aimed the slot to)
+	// LastCommitLSN is the commit_lsn of the last transaction ACKed (<= target).
+	// PostgreSQL clamps confirmed_flush_lsn to this, which can sit a few bytes
+	// below target (non-decodable WAL fills the gap), so verification checks
+	// LastCommitLSN <= confirmed_flush <= target rather than strict equality.
+	LastCommitLSN       string
 	TransactionsDrained int
 }
 
@@ -86,6 +91,7 @@ func Drain(ctx context.Context, cfg Config) (*Report, error) {
 		}
 		report.CompletedAt = time.Now()
 		report.FinalFlushLSN = targetLSN.String()
+		report.LastCommitLSN = lastFlushLSN.String()
 		return report, nil
 	}
 

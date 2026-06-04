@@ -68,5 +68,6 @@ type SlotBaseline struct {
 type DrainReport struct {
 	CompletedAt         time.Time `json:"completed_at"`
 	FinalFlushLSN       string    `json:"final_flush_lsn"`
+	LastCommitLSN       string    `json:"last_commit_lsn"`
 	TransactionsDrained int       `json:"transactions_drained"`
 }

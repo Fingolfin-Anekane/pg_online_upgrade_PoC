@@ -60,6 +60,7 @@ func (s *runSlotDrain) Run(ctx context.Context) error {
 	return s.d.Mgr.SetDrainReport(&state.DrainReport{
 		CompletedAt:         report.CompletedAt,
 		FinalFlushLSN:       report.FinalFlushLSN,
+		LastCommitLSN:       report.LastCommitLSN,
 		TransactionsDrained: report.TransactionsDrained,
 	})
 }
@@ -91,14 +92,28 @@ func (s *verifySlotDrained) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("drain: parse confirmed_flush_lsn %q: %w", slot.ConfirmedFlushLSN, err)
 	}
-	expectedLSN, err := pglogrepl.ParseLSN(report.FinalFlushLSN)
+	target, err := pglogrepl.ParseLSN(report.FinalFlushLSN)
 	if err != nil {
-		return fmt.Errorf("drain: parse drain final flush %q: %w", report.FinalFlushLSN, err)
+		return fmt.Errorf("drain: parse drain target %q: %w", report.FinalFlushLSN, err)
 	}
-	if flushLSN != expectedLSN {
-		return fmt.Errorf("drain: confirmed_flush_lsn %s != drained final %s", slot.ConfirmedFlushLSN, report.FinalFlushLSN)
+	// The slot must sit at the boundary, not exactly on target: PostgreSQL clamps
+	// confirmed_flush_lsn to the last record it decoded, which can be a few bytes
+	// below target (non-decodable WAL fills the gap). The safe window is
+	// LastCommitLSN <= confirmed_flush <= target — above target loses the tail,
+	// below the last drained commit means the slot never advanced (incomplete).
+	if flushLSN > target {
+		return fmt.Errorf("drain: confirmed_flush_lsn %s overshot target %s — slot would skip post-target changes (data loss)", slot.ConfirmedFlushLSN, report.FinalFlushLSN)
 	}
-	s.d.logf("слот корректно слит: confirmed_flush_lsn=%s", slot.ConfirmedFlushLSN)
+	if report.LastCommitLSN != "" {
+		lastCommit, err := pglogrepl.ParseLSN(report.LastCommitLSN)
+		if err != nil {
+			return fmt.Errorf("drain: parse last commit %q: %w", report.LastCommitLSN, err)
+		}
+		if flushLSN < lastCommit {
+			return fmt.Errorf("drain: confirmed_flush_lsn %s is behind the last drained commit %s — slot not advanced (drain incomplete)", slot.ConfirmedFlushLSN, report.LastCommitLSN)
+		}
+	}
+	s.d.logf("слот корректно слит: confirmed_flush_lsn=%s (в окне [%s, target=%s])", slot.ConfirmedFlushLSN, report.LastCommitLSN, report.FinalFlushLSN)
 	return nil
 }
 

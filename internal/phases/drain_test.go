@@ -25,7 +25,7 @@ func TestDrainRunsAndVerifies(t *testing.T) {
 		called = true
 		assert.Equal(t, "0/3FA20000", cfg.TargetLSN)
 		assert.Contains(t, cfg.ConnString, "host=primary.host")
-		return &slotdrain.Report{CompletedAt: time.Now(), FinalFlushLSN: "0/3FA20000", TransactionsDrained: 3}, nil
+		return &slotdrain.Report{CompletedAt: time.Now(), FinalFlushLSN: "0/3FA20000", LastCommitLSN: "0/3FA20000", TransactionsDrained: 3}, nil
 	}
 	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/3FA20000"}}
 	d := Deps{
@@ -67,18 +67,49 @@ func TestDrainErrorsWithoutTargetLSN(t *testing.T) {
 	assert.Contains(t, err.Error(), "target_lsn not set")
 }
 
-func TestVerifySlotDrainedMismatch(t *testing.T) {
+func TestVerifySlotDrainedAcceptsConfirmedBelowTarget(t *testing.T) {
+	// PostgreSQL clamps confirmed_flush_lsn to the last decoded record, which sits
+	// a few bytes below target (non-published WAL in the gap). That is correct, not
+	// an error: confirmed_flush is at the last drained commit, the gap holds no
+	// commits, and nothing post-target is skipped.
 	mgr := testMgr(t)
 	require.NoError(t, mgr.Advance("isolate"))
 	require.NoError(t, mgr.Advance("drain"))
-	require.NoError(t, mgr.SetDrainReport(&state.DrainReport{FinalFlushLSN: "0/3FA20000"}))
-	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/10"}} // mismatch
+	require.NoError(t, mgr.SetDrainReport(&state.DrainReport{FinalFlushLSN: "0/F7852D8", LastCommitLSN: "0/F7852A8"}))
+	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/F7852A8"}}
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SlotName: "slot_up"}}, Mgr: mgr,
 		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
-	step := &verifySlotDrained{d}
-	err := step.Run(context.Background())
+	require.NoError(t, (&verifySlotDrained{d}).Run(context.Background()))
+}
+
+func TestVerifySlotDrainedRejectsOvershoot(t *testing.T) {
+	// confirmed_flush past target means the slot resumes beyond target and skips
+	// the tail (post-target commits) — data loss.
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.Advance("drain"))
+	require.NoError(t, mgr.SetDrainReport(&state.DrainReport{FinalFlushLSN: "0/F7852D8", LastCommitLSN: "0/F7852A8"}))
+	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/F785400"}} // > target
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SlotName: "slot_up"}}, Mgr: mgr,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	err := (&verifySlotDrained{d}).Run(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "!=")
+	assert.Contains(t, err.Error(), "overshot")
+}
+
+func TestVerifySlotDrainedRejectsBehindLastCommit(t *testing.T) {
+	// confirmed_flush below the last drained commit means the slot never advanced
+	// there — the drain was incomplete and baseline commits would be redelivered.
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.Advance("drain"))
+	require.NoError(t, mgr.SetDrainReport(&state.DrainReport{FinalFlushLSN: "0/3FA20000", LastCommitLSN: "0/3FA20000"}))
+	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/10"}}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SlotName: "slot_up"}}, Mgr: mgr,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	err := (&verifySlotDrained{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "behind")
 }
 
 func TestVerifySlotDrainedMissingSlot(t *testing.T) {
