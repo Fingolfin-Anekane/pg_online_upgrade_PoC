@@ -19,6 +19,9 @@ import (
 func (f *fakePG) SubscriptionExists(_ context.Context, name string) (bool, error) {
 	return f.subExists, nil
 }
+func (f *fakePG) SubscriptionEnabled(_ context.Context, name string) (bool, error) {
+	return f.subEnabled, nil
+}
 func (f *fakePG) GetSubscriptionLag(_ context.Context, name string) (*pg.SubscriptionLag, error) {
 	return f.subLag, nil
 }

@@ -49,7 +49,7 @@ func TestSwitchoverTransitionsToFinalize(t *testing.T) {
 }
 
 func TestSwitchoverFreezeAndSyncSequences(t *testing.T) {
-	pg17 := &fakePG{}
+	pg17 := &fakePG{subEnabled: true} // forward sub still live -> exercise the real zero-lag gate
 	// publisher (old primary): zero lag + the sequence to sync
 	oldPrimary := &fakePG{subLag: &pg.SubscriptionLag{}, sequences: []pg.SequenceInfo{{Schema: "public", Name: "s1", LastValue: 42}}}
 	d := switchoverDeps(t, pg17, oldPrimary)
@@ -86,13 +86,35 @@ func TestWaitFinalLagZeroDoneAfterForwardDisabled(t *testing.T) {
 }
 
 func TestWaitFinalLagZeroErrorsWhenBehind(t *testing.T) {
-	// lag is reported by the publisher (old primary), not PG17
-	d := switchoverDeps(t, &fakePG{}, &fakePG{subLag: &pg.SubscriptionLag{ByteLag: 250}})
+	// Forward sub still enabled on PG17 (pre-cutover) -> the lag gate is live.
+	// lag is reported by the publisher (old primary), not PG17.
+	d := switchoverDeps(t, &fakePG{subEnabled: true}, &fakePG{subLag: &pg.SubscriptionLag{ByteLag: 250}})
 	step := &waitFinalLagZero{d}
 	done, err := step.Check(context.Background())
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.Error(t, step.Run(context.Background()))
+}
+
+func TestWaitFinalLagZeroDoneWhenForwardSubDisabledOnSubscriber(t *testing.T) {
+	// Recovery from a state file written by an older binary: forward_sub_disabled
+	// artifact is false, but the subscription really is disabled on PG17 and its
+	// walsender on the publisher is gone (subLag nil). Check must derive "done"
+	// from the live subscription state, not error with "no walsender ...".
+	d := switchoverDeps(t, &fakePG{subEnabled: false}, &fakePG{subLag: nil})
+	require.False(t, d.Mgr.Get().Artifacts.ForwardSubDisabled, "artifact must be unset for this case")
+	done, err := (&waitFinalLagZero{d}).Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
+}
+
+func TestWaitFinalLagZeroErrorsWhenEnabledButNoWalsender(t *testing.T) {
+	// Subscription enabled but no walsender on the publisher: a genuine "not
+	// replicating" problem, must still surface as an error (not silently "done").
+	d := switchoverDeps(t, &fakePG{subEnabled: true}, &fakePG{subLag: nil})
+	_, err := (&waitFinalLagZero{d}).Check(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no walsender")
 }
 
 func TestSyncSequencesMultiple(t *testing.T) {

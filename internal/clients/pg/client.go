@@ -32,6 +32,7 @@ type Client interface {
 	DisableSubscription(ctx context.Context, name string) error
 	CountAppBackends(ctx context.Context) (int, error)
 	SubscriptionExists(ctx context.Context, name string) (bool, error)
+	SubscriptionEnabled(ctx context.Context, name string) (bool, error)
 	GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error)
 	GetAllSequences(ctx context.Context) ([]SequenceInfo, error)
 	SetSequenceValue(ctx context.Context, schema, name string, value int64) error
@@ -286,6 +287,20 @@ func (c *internalClient) SubscriptionExists(ctx context.Context, name string) (b
 	return exists, err
 }
 
+// SubscriptionEnabled reports whether the named subscription exists AND its apply
+// worker is enabled (queried on the subscriber). An absent subscription reads as
+// false. It distinguishes "still applying" from "disabled at cutover" without
+// needing the walsender on the publisher, which a disabled subscription tears
+// down.
+func (c *internalClient) SubscriptionEnabled(ctx context.Context, name string) (bool, error) {
+	var enabled bool
+	err := c.q.QueryRow(ctx, "SELECT subenabled FROM pg_subscription WHERE subname = $1", name).Scan(&enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return enabled, err
+}
+
 // GetSubscriptionLag reports the replication lag of the walsender feeding the
 // named subscription. It MUST be called on the PUBLISHER (the node being
 // subscribed to): write/flush/replay_lag live in pg_stat_replication there, not
@@ -451,6 +466,9 @@ func (p *PoolClient) CountAppBackends(ctx context.Context) (int, error) {
 }
 func (p *PoolClient) SubscriptionExists(ctx context.Context, name string) (bool, error) {
 	return p.ic().SubscriptionExists(ctx, name)
+}
+func (p *PoolClient) SubscriptionEnabled(ctx context.Context, name string) (bool, error) {
+	return p.ic().SubscriptionEnabled(ctx, name)
 }
 func (p *PoolClient) GetSubscriptionLag(ctx context.Context, name string) (*SubscriptionLag, error) {
 	return p.ic().GetSubscriptionLag(ctx, name)

@@ -31,6 +31,7 @@ type fakePG struct {
 	conninfoCleared bool
 	subLag          *pg.SubscriptionLag
 	subExists       bool
+	subEnabled      bool
 	createdSub      string
 	frozen          string
 	sequences       []pg.SequenceInfo

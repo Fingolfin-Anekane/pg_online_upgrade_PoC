@@ -72,9 +72,25 @@ type waitFinalLagZero struct{ d Deps }
 func (s *waitFinalLagZero) ID() runner.StepID { return "WaitFinalLagZero" }
 func (s *waitFinalLagZero) Check(ctx context.Context) (bool, error) {
 	// Past the cutover the forward subscription is disabled and its walsender is
-	// gone, so zero() would error "no walsender ..."; the lag was already drained
-	// to zero on the first pass, so report done.
+	// gone, so zero() would error "no walsender ...". Derive "already past this
+	// point" from live state, not just our artifact: a state file written by an
+	// older binary records forward_sub_disabled=false even though the subscription
+	// really is disabled on PG17. The artifact is only a fast-path.
 	if s.d.forwardSubDisabled() {
+		return true, nil
+	}
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return false, err
+	}
+	enabled, err := pg17.SubscriptionEnabled(ctx, s.d.Cfg.Upgrade.SubscriptionName)
+	if err != nil {
+		return false, err
+	}
+	if !enabled {
+		// Disabled or already dropped on the subscriber => the cutover happened and
+		// the final lag was drained to zero before the disable; nothing left to wait
+		// on (and no walsender to read).
 		return true, nil
 	}
 	return s.zero(ctx)
