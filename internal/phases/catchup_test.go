@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
 	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
@@ -74,12 +75,27 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 
 func TestStartPG17Runs(t *testing.T) {
 	tools := &fakeTools{newDataDir: "/nd"} // not running yet; StartPatroni flips running=true
+	writable := &fakePG{inRecovery: false} // Patroni promoted PG17 to a writable primary
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{
 		NewPGBindir: "/n", NewDataDir: "/nd", PatroniStartCommand: "systemctl start patroni",
-	}}, Tools: tools}
+	}}, Tools: tools, PG17: func(context.Context) (pg.Client, error) { return writable, nil }}
 	require.NoError(t, (&startPG17{d}).Run(context.Background()))
 	assert.Equal(t, "systemctl start patroni", tools.patroniStarted)
 	assert.True(t, tools.running) // PG17 came up under Patroni
+}
+
+func TestWaitWritableReturnsWhenPrimary(t *testing.T) {
+	writable := func(context.Context) (pg.Client, error) { return &fakePG{inRecovery: false}, nil }
+	require.NoError(t, waitWritable(context.Background(), writable, 3, time.Millisecond))
+}
+
+func TestWaitWritableTimesOutWhileStandby(t *testing.T) {
+	// Patroni starts PG17 read-only (in recovery) before promoting it; creating a
+	// subscription then fails 25006, so we must wait out this window.
+	standby := func(context.Context) (pg.Client, error) { return &fakePG{inRecovery: true}, nil }
+	err := waitWritable(context.Background(), standby, 2, time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writable primary")
 }
 
 func TestStartPG17SkipsWhenAlreadyRunning(t *testing.T) {

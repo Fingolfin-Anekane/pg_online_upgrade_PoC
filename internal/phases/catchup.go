@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/connect"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 )
@@ -145,8 +146,43 @@ func (s *startPG17) Run(ctx context.Context) error {
 	if err := waitRunning(ctx, s.d.Tools, s.d.Cfg.Upgrade.NewPGBindir, s.d.Cfg.Upgrade.NewDataDir, 60, time.Second); err != nil {
 		return err
 	}
-	s.d.logf("PG17 поднят под управлением Patroni")
+	// pg_ctl status only means the postmaster is up; Patroni starts PG17 read-only
+	// (in recovery) and promotes it a moment later. CreateForwardSubscription does
+	// CREATE SUBSCRIPTION, which a read-only backend rejects with 25006, so wait
+	// until Patroni has promoted PG17 to a writable primary.
+	s.d.logf("жду, пока Patroni промоутит PG17 в writable primary (pg_is_in_recovery=false, до 60с)...")
+	if err := waitWritable(ctx, s.d.PG17, 60, time.Second); err != nil {
+		return err
+	}
+	s.d.logf("PG17 поднят под управлением Patroni и promoted в primary")
 	return nil
+}
+
+// waitWritable polls the PG17 client until the node reports it is out of recovery
+// (a writable primary), up to attempts times spaced by interval. Transient
+// connect/query errors during Patroni's promote are tolerated and retried.
+func waitWritable(ctx context.Context, pg17 func(context.Context) (pg.Client, error), attempts int, interval time.Duration) error {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if c, err := pg17(ctx); err != nil {
+			lastErr = err
+		} else if inRec, err := c.IsInRecovery(ctx); err != nil {
+			lastErr = err
+		} else if !inRec {
+			return nil
+		} else {
+			lastErr = nil // up, but still a read-only standby
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("catchup: PG17 did not become a writable primary within %s: %w", time.Duration(attempts)*interval, lastErr)
+	}
+	return fmt.Errorf("catchup: PG17 did not become a writable primary within %s (Patroni did not promote it)", time.Duration(attempts)*interval)
 }
 
 // waitRunning polls Tools.IsRunning until it reports the server is up, up to
