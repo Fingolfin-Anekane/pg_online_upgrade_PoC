@@ -14,11 +14,19 @@ import (
 
 // NewIsolate builds Phase 2: disconnect N1 from WAL and record the physical
 // boundary target_lsn.
+//
+// StopPatroniOnN1 runs right after the cluster-wide pause: a paused Patroni
+// still reconciles primary_conninfo on N1 and would re-attach its walreceiver
+// after DisconnectN1FromWAL, so N1 must be taken out of Patroni's loop for the
+// disconnect to hold. It is operator-gated by upgrade.old_patroni_stop_command
+// (the same command used before pg_upgrade); when unset, isolate falls back to
+// the VerifyN1Detached guard catching a re-attach.
 func NewIsolate(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "isolate",
 		steps: []runner.Step{
 			&pausePatroni{d},
+			&stopPatroniOnN1{d},
 			&captureReceivedLSN{d},
 			&disconnectN1{d},
 			&waitReplayComplete{d},
@@ -35,6 +43,12 @@ type pausePatroni struct{ d Deps }
 
 func (s *pausePatroni) ID() runner.StepID { return "PausePatroni" }
 func (s *pausePatroni) Check(ctx context.Context) (bool, error) {
+	// Once StopPatroniOnN1 has run, N1's Patroni REST (localhost:8008) is down, so
+	// GetCluster would error on re-entry. The pause was already applied before the
+	// stop, so treat this step as done.
+	if s.d.Mgr.Get().Artifacts.PatroniStoppedOnN1 {
+		return true, nil
+	}
 	c, err := s.d.Patroni.GetCluster(ctx)
 	if err != nil {
 		return false, err
@@ -51,6 +65,31 @@ func (s *pausePatroni) Run(ctx context.Context) error {
 	}
 	s.d.logf("Patroni на паузе")
 	return nil
+}
+
+// --- StopPatroniOnN1: take Patroni off N1 so the WAL disconnect holds ---
+
+type stopPatroniOnN1 struct{ d Deps }
+
+func (s *stopPatroniOnN1) ID() runner.StepID { return "StopPatroniOnN1" }
+func (s *stopPatroniOnN1) Check(context.Context) (bool, error) {
+	return s.d.Mgr.Get().Artifacts.PatroniStoppedOnN1, nil
+}
+func (s *stopPatroniOnN1) Run(ctx context.Context) error {
+	cmd := s.d.Cfg.Upgrade.OldPatroniStopCommand
+	if cmd == "" {
+		// No stop command configured: leave Patroni running (pause stays in effect)
+		// and rely on VerifyN1Detached to catch a re-attach. Don't record the
+		// artifact, so PausePatroni keeps using the live REST.
+		s.d.logf("old_patroni_stop_command не задан — Patroni на N1 не останавливаю; полагаюсь на guard VerifyN1Detached (без остановки Patroni может вернуть primary_conninfo)")
+		return nil
+	}
+	s.d.logf("останавливаю Patroni на N1, чтобы он не переподключил WAL: %q...", cmd)
+	if err := s.d.Tools.StopPatroni(ctx, cmd); err != nil {
+		return err
+	}
+	s.d.logf("Patroni на N1 остановлен (postgres продолжает работать)")
+	return s.d.Mgr.SetPatroniStoppedOnN1()
 }
 
 // --- CaptureReceivedLSN (must run before disconnect; receiver goes empty after) ---
@@ -270,6 +309,7 @@ func (s *recordTargetLSN) Run(ctx context.Context) error {
 
 var (
 	_ runner.Step = (*pausePatroni)(nil)
+	_ runner.Step = (*stopPatroniOnN1)(nil)
 	_ runner.Step = (*captureReceivedLSN)(nil)
 	_ runner.Step = (*disconnectN1)(nil)
 	_ runner.Step = (*waitReplayComplete)(nil)

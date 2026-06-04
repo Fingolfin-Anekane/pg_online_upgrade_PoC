@@ -127,6 +127,11 @@ func (m *Manager) SetDSNSwapNotified() error {
 	return m.persist()
 }
 
+func (m *Manager) SetPatroniStoppedOnN1() error {
+	m.state.Artifacts.PatroniStoppedOnN1 = true
+	return m.persist()
+}
+
 func (m *Manager) SetForwardSubDisabled() error {
 	m.state.Artifacts.ForwardSubDisabled = true
 	return m.persist()

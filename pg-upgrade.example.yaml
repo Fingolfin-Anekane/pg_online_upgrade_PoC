@@ -68,12 +68,16 @@ upgrade:
   # "systemctl start patroni". [optional]
   patroni_start_command: "systemctl start patroni"
 
-  # Command to stop the OLD Patroni on target_node, run before pg_upgrade. While
-  # the old Patroni runs it can restart the old server, and after pg_upgrade
-  # --link a running old server corrupts the new cluster. If empty, the upgrade
-  # step only VERIFIES the old Patroni is unreachable and fails otherwise (stop it
-  # manually) — leave empty where auto-stopping is risky, e.g. Patroni as PID 1 in
-  # a k8s pod shared with this binary. [optional]
+  # Command to stop the OLD Patroni on target_node. Run at TWO points: during
+  # isolate (a paused Patroni still reconciles primary_conninfo and would
+  # re-attach N1's walreceiver after the WAL disconnect, so N1 must leave
+  # Patroni's loop — the command MUST leave postgres running, e.g. plain
+  # `systemctl stop patroni`), and again before pg_upgrade (a running old server
+  # corrupts the --link'd new cluster). If empty, isolate relies on its
+  # VerifyN1Detached guard and the upgrade step only VERIFIES the old Patroni is
+  # unreachable and fails otherwise (stop it manually) — leave empty where
+  # auto-stopping is risky, e.g. Patroni as PID 1 in a k8s pod shared with this
+  # binary. [optional]
   old_patroni_stop_command: "systemctl stop patroni"
 
   # Path to the patroni.yml whose bootstrap.initdb options are passed to initdb

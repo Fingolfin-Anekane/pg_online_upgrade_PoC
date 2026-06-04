@@ -44,6 +44,7 @@ type StepError struct {
 
 type Artifacts struct {
 	PrimaryHost          string        `json:"primary_host,omitempty"`
+	PatroniStoppedOnN1   bool          `json:"patroni_stopped_on_n1"`
 	SlotBaseline         *SlotBaseline `json:"slot_baseline,omitempty"`
 	ReceivedLSN          string        `json:"received_lsn,omitempty"`
 	TargetLSN            string        `json:"target_lsn,omitempty"`

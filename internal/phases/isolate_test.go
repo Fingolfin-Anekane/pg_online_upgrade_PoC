@@ -2,6 +2,7 @@ package phases
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,9 +82,54 @@ func TestIsolateRunsVerifyN1DetachedBeforeRecordingTarget(t *testing.T) {
 		names = append(names, string(s.ID()))
 	}
 	assert.Equal(t, []string{
-		"PausePatroni", "CaptureReceivedLSN", "DisconnectN1FromWAL",
+		"PausePatroni", "StopPatroniOnN1", "CaptureReceivedLSN", "DisconnectN1FromWAL",
 		"WaitReplayComplete", "VerifyN1Detached", "RecordTargetLSN",
 	}, names)
+}
+
+func TestStopPatroniOnN1RunsCommandAndRecords(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	tools := &fakeTools{}
+	d := Deps{Mgr: mgr, Tools: tools, Cfg: config.Config{Upgrade: config.UpgradeConfig{
+		OldPatroniStopCommand: "systemctl stop patroni",
+	}}}
+	step := &stopPatroniOnN1{d}
+
+	done, err := step.Check(context.Background())
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.NoError(t, step.Run(context.Background()))
+	assert.Equal(t, "systemctl stop patroni", tools.patroniStopped)
+	assert.True(t, mgr.Get().Artifacts.PatroniStoppedOnN1)
+
+	// recorded -> skip on re-entry (so it isn't re-run pointlessly)
+	done, err = step.Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
+}
+
+func TestStopPatroniOnN1NoCommandIsNoop(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	tools := &fakeTools{}
+	d := Deps{Mgr: mgr, Tools: tools, Cfg: config.Config{Upgrade: config.UpgradeConfig{OldPatroniStopCommand: ""}}}
+
+	require.NoError(t, (&stopPatroniOnN1{d}).Run(context.Background()))
+	assert.Empty(t, tools.patroniStopped)
+	// nothing was stopped, so the pause step must keep using the live REST
+	assert.False(t, mgr.Get().Artifacts.PatroniStoppedOnN1)
+}
+
+func TestPausePatroniSkippedAfterN1PatroniStopped(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.SetPatroniStoppedOnN1())
+	// We already stopped Patroni on N1, so its REST is down; Check must NOT hit it.
+	d := Deps{Mgr: mgr, Patroni: &fakePatroni{err: errors.New("connection refused")}}
+	done, err := (&pausePatroni{d}).Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
 }
 
 func TestIsolateTransitionsToDrain(t *testing.T) {
