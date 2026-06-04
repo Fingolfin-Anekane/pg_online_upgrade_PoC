@@ -221,7 +221,7 @@ func (s *verifyN1Detached) Run(ctx context.Context) error {
 		// the WAL stream — typically Patroni re-applying its managed
 		// primary_conninfo even while paused. If we recorded target_lsn now, N1
 		// would keep advancing past it and the upgrade boundary would break.
-		return fmt.Errorf("isolate: N1 re-attached to WAL (walreceiver is active again, primary_conninfo was restored — usually paused Patroni reconciling it). Take Patroni out of N1's loop while keeping postgres up (e.g. SIGSTOP the Patroni process), re-clear primary_conninfo, then re-run; otherwise N1 drifts past target_lsn")
+		return fmt.Errorf("isolate: N1 re-attached to WAL (walreceiver is active again, primary_conninfo was restored — usually paused Patroni reconciling it). Stop Patroni on N1 (systemctl stop patroni — leaves postgres running in this setup), re-clear primary_conninfo, then re-run; otherwise N1 drifts past target_lsn")
 	}
 	s.d.logf("N1 не переподключился — приёмник пуст")
 	return nil
