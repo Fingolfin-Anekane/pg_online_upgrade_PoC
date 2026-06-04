@@ -40,7 +40,7 @@ func finalizeDeps(t *testing.T, pg17, oldPrimary *fakePG, newPat patroni.Client)
 	}
 }
 
-func TestFinalizeDropsAndUnfreezes(t *testing.T) {
+func TestFinalizeDropsRollbackArtifactsAndKeepsFreeze(t *testing.T) {
 	pg17 := &fakePG{}
 	oldPrimary := &fakePG{}
 	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
@@ -50,6 +50,7 @@ func TestFinalizeDropsAndUnfreezes(t *testing.T) {
 
 	ph := NewFinalize(d)
 	assert.Equal(t, "finalize", ph.ID())
+	require.Len(t, ph.Steps(), 3) // no UnfreezeOldPrimary step
 	for _, s := range ph.Steps() {
 		done, err := s.Check(context.Background())
 		require.NoError(t, err)
@@ -60,7 +61,8 @@ func TestFinalizeDropsAndUnfreezes(t *testing.T) {
 	assert.Contains(t, oldPrimary.droppedSub, "sub_rb") // reverse sub on old primary
 	assert.Contains(t, pg17.droppedPub, "pub_rb")       // reverse pub on PG17
 	assert.Contains(t, pg17.droppedSub, "sub_up")       // forward sub on PG17
-	assert.Equal(t, "app", oldPrimary.unfrozen)
+	// The old primary stays frozen (no split-brain): finalize must NOT unfreeze it.
+	assert.Empty(t, oldPrimary.unfrozen, "finalize must leave the old primary frozen")
 }
 
 func TestFinalizeTransitionsToCleanup(t *testing.T) {

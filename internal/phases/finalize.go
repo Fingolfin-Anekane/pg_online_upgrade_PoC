@@ -8,15 +8,22 @@ import (
 )
 
 // NewFinalize builds Phase 7: commit the upgrade by tearing down the rollback
-// artifacts (reverse replication, forward subscription, write freeze) and
-// verifying the operator-performed Patroni cluster rename.
+// artifacts (reverse replication, forward subscription) and verifying the
+// operator-performed Patroni cluster rename.
+//
+// The old primary's DML write-freeze is deliberately NOT lifted here: traffic is
+// on PG17 and the old cluster is about to be decommissioned in cleanup, so
+// re-enabling writes on it would only invite split-brain (a stray client or
+// pooler still pointed at the old DSN could write to PG13 with no replication
+// back to PG17). It stays frozen until it is stopped. (UnfreezeAfterUpgrade
+// remains on the client as a manual recovery escape hatch for aborting before
+// decommission.)
 func NewFinalize(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "finalize",
 		steps: []runner.Step{
 			&dropReverseReplication{d},
 			&dropForwardSubscription{d},
-			&unfreezeOldPrimary{d},
 			&verifyRenamedCluster{d},
 		},
 		trans: []runner.Transition{{To: "cleanup"}},
@@ -74,25 +81,6 @@ func (s *dropForwardSubscription) Run(ctx context.Context) error {
 	return nil
 }
 
-// --- UnfreezeOldPrimary (drop the DML freeze triggers on the old primary) ---
-
-type unfreezeOldPrimary struct{ d Deps }
-
-func (s *unfreezeOldPrimary) ID() runner.StepID                   { return "UnfreezeOldPrimary" }
-func (s *unfreezeOldPrimary) Check(context.Context) (bool, error) { return false, nil } // UnfreezeAfterUpgrade is idempotent
-func (s *unfreezeOldPrimary) Run(ctx context.Context) error {
-	s.d.logf("снимаю заморозку записи на старом primary (удаляю DML-триггеры, БД %q)...", s.d.Cfg.Upgrade.DBName)
-	old, err := s.d.Primary(ctx)
-	if err != nil {
-		return err
-	}
-	if err := old.UnfreezeAfterUpgrade(ctx, s.d.Cfg.Upgrade.DBName); err != nil {
-		return err
-	}
-	s.d.logf("заморозка снята")
-	return nil
-}
-
 // --- VerifyRenamedCluster (operator renames via etcdctl; binary verifies health) ---
 
 type verifyRenamedCluster struct{ d Deps }
@@ -115,6 +103,5 @@ func (s *verifyRenamedCluster) Run(ctx context.Context) error {
 var (
 	_ runner.Step = (*dropReverseReplication)(nil)
 	_ runner.Step = (*dropForwardSubscription)(nil)
-	_ runner.Step = (*unfreezeOldPrimary)(nil)
 	_ runner.Step = (*verifyRenamedCluster)(nil)
 )
