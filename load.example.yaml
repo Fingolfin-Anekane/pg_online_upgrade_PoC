@@ -12,11 +12,18 @@
 # --- endpoints -----------------------------------------------------------
 # A = old primary (where writes go BEFORE cutover); B = new PG17 primary.
 # dbname in both DSNs must match upgrade.dbname / the pg17_dsn dbname in
-# pg-upgrade.yaml. PG17 comes up after initdb with ssl=off, so use
-# sslmode=disable (or =prefer) — sslmode=require fails with "server refused TLS
-# connection" until SSL is configured on the new cluster.
-dsn_a: "host=/var/run/postgresql port=5432 user=postgres password=change-me dbname=appdb sslmode=disable"
-dsn_b: "host=pg17-vip port=5432 user=postgres password=change-me dbname=appdb sslmode=disable"
+# pg-upgrade.yaml.
+#
+# Use sslmode=prefer (try SSL, fall back to plaintext): the old primary's
+# pg_hba.conf typically lets the replica subnet in only via `hostssl`, so a
+# plaintext connection (sslmode=disable) is rejected with "no pg_hba.conf entry
+# for host ..., SSL off" — this is what pg-upgrade's own primary DSN does
+# implicitly (libpq defaults to prefer when sslmode is unset). prefer still works
+# against a freshly initdb'd PG17 that comes up with ssl=off. Avoid
+# sslmode=require: it fails with "server refused TLS connection" on that PG17
+# until SSL is configured.
+dsn_a: "host=10.0.0.10 port=5432 user=postgres password=change-me dbname=appdb sslmode=prefer"
+dsn_b: "host=pg17-vip port=5432 user=postgres password=change-me dbname=appdb sslmode=prefer"
 
 # Durable append-only intent-log. `run` writes it, `verify` reads it. Keep it on
 # a path that survives the run (not a tmpfs that the swap/restart may clear).
