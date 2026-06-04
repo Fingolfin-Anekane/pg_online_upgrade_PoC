@@ -1,0 +1,51 @@
+# loadtool configuration stub.
+#
+# Copy to load.yaml and fill in. Pass with `loadtool <cmd> --config load.yaml`.
+# Any field can be overridden by a flag (e.g. --dsn-a, --duration). Unset YAML
+# fields keep the built-in defaults (see loadcfg.Default).
+#
+# loadtool drives a verifiable workload during an online upgrade: it generates
+# load against dsn_a (the OLD primary), and on SIGHUP swaps every connection to
+# dsn_b (the NEW PG17) — the in-flight cutover. It records a durable intent-log;
+# `loadtool verify` later reconciles that log against dsn_b for a verdict.
+
+# --- endpoints -----------------------------------------------------------
+# A = old primary (where writes go BEFORE cutover); B = new PG17 primary.
+# dbname in both DSNs must match upgrade.dbname / the pg17_dsn dbname in
+# pg-upgrade.yaml. PG17 comes up after initdb with ssl=off, so use
+# sslmode=disable (or =prefer) — sslmode=require fails with "server refused TLS
+# connection" until SSL is configured on the new cluster.
+dsn_a: "host=/var/run/postgresql port=5432 user=postgres password=change-me dbname=appdb sslmode=disable"
+dsn_b: "host=pg17-vip port=5432 user=postgres password=change-me dbname=appdb sslmode=disable"
+
+# Durable append-only intent-log. `run` writes it, `verify` reads it. Keep it on
+# a path that survives the run (not a tmpfs that the swap/restart may clear).
+intent_log: "loadtool-intent.jsonl"
+
+# --- workload sizing -----------------------------------------------------
+# K accounts seeded by `init`, each with this starting balance. The transfer
+# workers move money between accounts, so the invariant `verify` checks is
+# SUM(balance) == accounts * balance. Pass the SAME balance to `init` and
+# `verify` (a mismatch makes the oracle expect the wrong total).
+accounts: 100
+balance: 1000
+
+# Run length. "0" (or omitted) means run until SIGINT/SIGTERM — the intended
+# mode when coordinating with an upgrade (you stop it after cutover completes).
+# Accepts a duration string ("30s", "5m") or an integer of nanoseconds.
+duration: 0
+
+# --- workers -------------------------------------------------------------
+# Each set has count (concurrent workers) and rate (ops/sec/worker; 0 =
+# unthrottled). Throttle on a shared/staging cluster so load is steady, not a
+# flood.
+workers:
+  # append: INSERT-only workers exercising an append-heavy table.
+  append: { count: 4, rate: 50 }
+  # transfer: debit-one/credit-another in one txn; verifies sum conservation.
+  transfer: { count: 2, rate: 30 }
+  # ryw: read-your-write — write then immediately read it back on the same DSN.
+  ryw: { count: 1, rate: 10 }
+  # long_txn: holds a transaction open for txn_duration, writing batch_size rows,
+  # to keep long-running snapshots alive across the cutover.
+  long_txn: { count: 1, txn_duration: 5s, batch_size: 10 }
