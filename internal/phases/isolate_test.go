@@ -58,6 +58,34 @@ func TestIsolateInvariantViolation(t *testing.T) {
 	assert.Contains(t, err.Error(), "invariant")
 }
 
+func TestVerifyN1DetachedFailsWhenReceiverReattached(t *testing.T) {
+	// Paused Patroni can re-apply primary_conninfo, reconnecting N1's walreceiver
+	// after DisconnectFromWAL. The guard must catch that (receiver active again)
+	// and fail loudly instead of letting isolate record a stale target_lsn while
+	// N1 silently drifts.
+	n1 := &fakePG{walRcvActive: true}
+	err := (&verifyN1Detached{Deps{N1: n1}}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "re-attached")
+}
+
+func TestVerifyN1DetachedPassesWhenReceiverGone(t *testing.T) {
+	n1 := &fakePG{walRcvActive: false}
+	require.NoError(t, (&verifyN1Detached{Deps{N1: n1}}).Run(context.Background()))
+}
+
+func TestIsolateRunsVerifyN1DetachedBeforeRecordingTarget(t *testing.T) {
+	steps := NewIsolate(Deps{}).Steps()
+	var names []string
+	for _, s := range steps {
+		names = append(names, string(s.ID()))
+	}
+	assert.Equal(t, []string{
+		"PausePatroni", "CaptureReceivedLSN", "DisconnectN1FromWAL",
+		"WaitReplayComplete", "VerifyN1Detached", "RecordTargetLSN",
+	}, names)
+}
+
 func TestIsolateTransitionsToDrain(t *testing.T) {
 	ph := NewIsolate(Deps{})
 	tr := ph.Transitions()

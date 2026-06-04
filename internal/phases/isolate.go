@@ -22,6 +22,7 @@ func NewIsolate(d Deps) runner.Phase {
 			&captureReceivedLSN{d},
 			&disconnectN1{d},
 			&waitReplayComplete{d},
+			&verifyN1Detached{d},
 			&recordTargetLSN{d},
 		},
 		trans: []runner.Transition{{To: "drain"}},
@@ -200,6 +201,32 @@ func (s *waitReplayComplete) replayCaughtUp(ctx context.Context) (bool, error) {
 	return replay >= recv, nil
 }
 
+// --- VerifyN1Detached: the disconnect must still hold before we freeze ---
+
+type verifyN1Detached struct{ d Deps }
+
+func (s *verifyN1Detached) ID() runner.StepID { return "VerifyN1Detached" }
+
+// Check always returns false: this is a live invariant, not a recorded fact —
+// re-verify on every (re-)entry.
+func (s *verifyN1Detached) Check(context.Context) (bool, error) { return false, nil }
+func (s *verifyN1Detached) Run(ctx context.Context) error {
+	s.d.logf("проверяю, что N1 не переподключился к WAL (walreceiver должен быть пуст)...")
+	active, err := s.d.N1.IsWALReceiverActive(ctx)
+	if err != nil {
+		return err
+	}
+	if active {
+		// DisconnectFromWAL cleared primary_conninfo, but something put N1 back on
+		// the WAL stream — typically Patroni re-applying its managed
+		// primary_conninfo even while paused. If we recorded target_lsn now, N1
+		// would keep advancing past it and the upgrade boundary would break.
+		return fmt.Errorf("isolate: N1 re-attached to WAL (walreceiver is active again, primary_conninfo was restored — usually paused Patroni reconciling it). Take Patroni out of N1's loop while keeping postgres up (e.g. SIGSTOP the Patroni process), re-clear primary_conninfo, then re-run; otherwise N1 drifts past target_lsn")
+	}
+	s.d.logf("N1 не переподключился — приёмник пуст")
+	return nil
+}
+
 // --- RecordTargetLSN + post-phase invariant ---
 
 type recordTargetLSN struct{ d Deps }
@@ -246,5 +273,6 @@ var (
 	_ runner.Step = (*captureReceivedLSN)(nil)
 	_ runner.Step = (*disconnectN1)(nil)
 	_ runner.Step = (*waitReplayComplete)(nil)
+	_ runner.Step = (*verifyN1Detached)(nil)
 	_ runner.Step = (*recordTargetLSN)(nil)
 )
