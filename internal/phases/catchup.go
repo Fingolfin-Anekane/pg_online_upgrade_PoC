@@ -205,6 +205,39 @@ func waitRunning(ctx context.Context, tools interface {
 	return fmt.Errorf("catchup: PG17 did not come up under Patroni within %s", time.Duration(attempts)*interval)
 }
 
+// Lag-zero gates (catchup tail, post-freeze final lag) poll rather than failing
+// on the first non-zero sample: once the relevant writes stop, the lag drains to
+// zero monotonically, so a short wait beats forcing the operator to re-run.
+const (
+	lagPollAttempts = 60
+	lagPollInterval = time.Second
+)
+
+// pollLagZero calls zero repeatedly until it reports true, ctx is done, or
+// attempts are exhausted. A transient query error is retried; the last one is
+// surfaced if the poll never sees zero.
+func pollLagZero(ctx context.Context, zero func(context.Context) (bool, error), attempts int, interval time.Duration) error {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if ok, err := zero(ctx); err != nil {
+			lastErr = err
+		} else if ok {
+			return nil
+		} else {
+			lastErr = nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("lag did not reach zero within %s: %w", time.Duration(attempts)*interval, lastErr)
+	}
+	return fmt.Errorf("lag did not reach zero within %s", time.Duration(attempts)*interval)
+}
+
 // --- CreateForwardSubscription (PG17 subscribes to old primary's publication) ---
 
 type createForwardSubscription struct{ d Deps }
@@ -243,13 +276,10 @@ type waitLagZero struct{ d Deps }
 func (s *waitLagZero) ID() runner.StepID                       { return "WaitLagZero" }
 func (s *waitLagZero) Check(ctx context.Context) (bool, error) { return s.zero(ctx) }
 func (s *waitLagZero) Run(ctx context.Context) error {
-	s.d.logf("проверяю лаг прямой подписки %q (нужно bytes_behind=0)...", s.d.Cfg.Upgrade.SubscriptionName)
-	zero, err := s.zero(ctx)
-	if err != nil {
-		return err
-	}
-	if !zero {
-		return fmt.Errorf("catchup: subscription lag not yet zero; re-run pg-upgrade to retry")
+	s.d.logf("жду нулевого лага прямой подписки %q (bytes_behind=0, до %s)...",
+		s.d.Cfg.Upgrade.SubscriptionName, time.Duration(lagPollAttempts)*lagPollInterval)
+	if err := pollLagZero(ctx, s.zero, lagPollAttempts, lagPollInterval); err != nil {
+		return fmt.Errorf("catchup: subscription %w", err)
 	}
 	s.d.logf("лаг нулевой — PG17 догнал старый primary")
 	return nil

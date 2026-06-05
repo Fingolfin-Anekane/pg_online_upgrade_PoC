@@ -85,15 +85,13 @@ func TestWaitFinalLagZeroDoneAfterForwardDisabled(t *testing.T) {
 	}
 }
 
-func TestWaitFinalLagZeroErrorsWhenBehind(t *testing.T) {
+func TestWaitFinalLagZeroNotDoneWhenBehind(t *testing.T) {
 	// Forward sub still enabled on PG17 (pre-cutover) -> the lag gate is live.
 	// lag is reported by the publisher (old primary), not PG17.
 	d := switchoverDeps(t, &fakePG{subEnabled: true}, &fakePG{subLag: &pg.SubscriptionLag{ByteLag: 250}})
-	step := &waitFinalLagZero{d}
-	done, err := step.Check(context.Background())
+	done, err := (&waitFinalLagZero{d}).Check(context.Background())
 	require.NoError(t, err)
-	assert.False(t, done)
-	require.Error(t, step.Run(context.Background()))
+	assert.False(t, done) // Run polls until zero (see TestPollLagZero*), not a one-shot fail
 }
 
 func TestWaitFinalLagZeroDoneWhenForwardSubDisabledOnSubscriber(t *testing.T) {

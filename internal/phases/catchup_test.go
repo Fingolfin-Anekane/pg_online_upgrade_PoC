@@ -215,13 +215,25 @@ func TestVerifyNewClusterHealthyAcceptsSyncStandby(t *testing.T) {
 	require.NoError(t, (&verifyNewClusterHealthy{Deps{NewPatroni: newPat}}).Run(context.Background()))
 }
 
-func TestWaitLagZeroErrorsWhenBehind(t *testing.T) {
+func TestWaitLagZeroNotDoneWhenBehind(t *testing.T) {
 	primary := &fakePG{subLag: &pg.SubscriptionLag{ByteLag: 500}} // publisher reports lag (bytes behind)
 	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SubscriptionName: "sub_up"}},
 		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
-	step := &waitLagZero{d}
-	done, err := step.Check(context.Background())
+	done, err := (&waitLagZero{d}).Check(context.Background())
 	require.NoError(t, err)
-	assert.False(t, done)
-	require.Error(t, step.Run(context.Background()))
+	assert.False(t, done) // Run polls until zero (see TestPollLagZero*), not a one-shot fail
+}
+
+func TestPollLagZeroSucceedsAfterRetries(t *testing.T) {
+	calls := 0
+	zero := func(context.Context) (bool, error) { calls++; return calls >= 3, nil } // zero on the 3rd poll
+	require.NoError(t, pollLagZero(context.Background(), zero, 5, time.Millisecond))
+	assert.Equal(t, 3, calls)
+}
+
+func TestPollLagZeroTimesOutWhenNeverZero(t *testing.T) {
+	zero := func(context.Context) (bool, error) { return false, nil }
+	err := pollLagZero(context.Background(), zero, 2, time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zero")
 }

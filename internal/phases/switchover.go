@@ -3,6 +3,7 @@ package phases
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 )
@@ -96,13 +97,10 @@ func (s *waitFinalLagZero) Check(ctx context.Context) (bool, error) {
 	return s.zero(ctx)
 }
 func (s *waitFinalLagZero) Run(ctx context.Context) error {
-	s.d.logf("жду нулевого финального лага после заморозки (bytes_behind=0 на PG17)...")
-	zero, err := s.zero(ctx)
-	if err != nil {
-		return err
-	}
-	if !zero {
-		return fmt.Errorf("switchover: final lag not yet zero; re-run pg-upgrade to retry")
+	s.d.logf("жду нулевого финального лага после заморозки (bytes_behind=0 на PG17, до %s)...",
+		time.Duration(lagPollAttempts)*lagPollInterval)
+	if err := pollLagZero(ctx, s.zero, lagPollAttempts, lagPollInterval); err != nil {
+		return fmt.Errorf("switchover: final %w", err)
 	}
 	s.d.logf("финальный лаг нулевой")
 	return nil
