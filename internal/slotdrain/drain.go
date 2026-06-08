@@ -89,6 +89,17 @@ func Drain(ctx context.Context, cfg Config) (*Report, error) {
 		if err := sendStatusUpdate(ctx, conn, targetLSN); err != nil {
 			return nil, err
 		}
+		// Gracefully end copy-both mode. The status update above is fire-and-forget:
+		// the slot's confirmed_flush_lsn advances only when the walsender *reads* our
+		// feedback, and nothing forces it to do so before the deferred conn.Close
+		// tears down the connection. SendStandbyCopyDone sends CopyDone and reads the
+		// server's reply through ReadyForQuery, which makes the walsender drain its
+		// input — processing our target ACK — before we disconnect. Without it,
+		// confirmed_flush can stick below the LSNs we ACKed (it was observed landing
+		// below the last drained commit), failing VerifySlotDrained nondeterministically.
+		if _, err := pglogrepl.SendStandbyCopyDone(ctx, conn); err != nil {
+			return nil, fmt.Errorf("slotdrain copy-done: %w", err)
+		}
 		report.CompletedAt = time.Now()
 		report.FinalFlushLSN = targetLSN.String()
 		report.LastCommitLSN = lastFlushLSN.String()
