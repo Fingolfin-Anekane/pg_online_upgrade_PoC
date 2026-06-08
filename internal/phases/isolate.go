@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
+	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/jackc/pglogrepl"
 )
@@ -21,6 +22,27 @@ const (
 	pauseApplyTimeout  = 30 * time.Second
 	pauseApplyInterval = 1 * time.Second
 )
+
+// Settle/detach poll timings. Vars (not consts) so tests can shrink them.
+var (
+	// detachConfirm*: VerifyN1Detached polls for the walreceiver to go inactive
+	// after DisconnectN1FromWAL. The receiver shutdown after a reload is async, so
+	// tolerate a brief active window; a persistent active receiver is a re-attach.
+	detachConfirmTimeout  = 15 * time.Second
+	detachConfirmInterval = 1 * time.Second
+
+	// replayDrain*: WaitReplayDrained polls replay_lsn until it stops advancing.
+	// With the receiver gone, replay climbs to the end of received WAL then holds;
+	// the held value is N1's true physical freeze point (X').
+	replayDrainTimeout  = 60 * time.Second
+	replayDrainInterval = 1 * time.Second
+)
+
+// replayStableSamples is how many consecutive equal replay_lsn reads (one
+// replayDrainInterval apart) count as "settled". Three reads => two full
+// intervals of no movement, which on a receiver-less standby means replay has
+// drained all on-disk WAL.
+const replayStableSamples = 3
 
 // NewIsolate builds Phase 2: disconnect N1 from WAL and record the physical
 // boundary target_lsn.
@@ -39,8 +61,8 @@ func NewIsolate(d Deps) runner.Phase {
 			&stopPatroniOnN1{d},
 			&captureReceivedLSN{d},
 			&disconnectN1{d},
-			&waitReplayComplete{d},
 			&verifyN1Detached{d},
+			&waitReplayDrained{d},
 			&recordTargetLSN{d},
 		},
 		trans: []runner.Transition{{To: "drain"}},
@@ -128,8 +150,14 @@ func (s *stopPatroniOnN1) Run(ctx context.Context) error {
 	return s.d.Mgr.SetPatroniStoppedOnN1()
 }
 
-// --- CaptureReceivedLSN (must run before disconnect; receiver goes empty after) ---
-
+// --- CaptureReceivedLSN: a pre-disconnect LOWER BOUND on N1's frozen point ---
+//
+// received_lsn (pg_stat_wal_receiver) is read before DisconnectN1FromWAL while
+// the receiver still exists. It is only a lower bound: the receiver keeps
+// streaming in the gap before primary_conninfo is actually cleared, so N1's true
+// final position X' >= this value. We no longer derive target_lsn from it (that
+// caused the undershoot bug); WaitReplayDrained settles to X' after disconnect
+// and asserts X' >= this captured bound as a sanity check.
 type captureReceivedLSN struct{ d Deps }
 
 func (s *captureReceivedLSN) ID() runner.StepID { return "CaptureReceivedLSN" }
@@ -137,7 +165,7 @@ func (s *captureReceivedLSN) Check(context.Context) (bool, error) {
 	return s.d.Mgr.Get().Artifacts.ReceivedLSN != "", nil
 }
 func (s *captureReceivedLSN) Run(ctx context.Context) error {
-	s.d.logf("фиксирую received_lsn WAL-приёмника N1 (до отключения от WAL)...")
+	s.d.logf("фиксирую received_lsn WAL-приёмника N1 как нижнюю границу (до отключения от WAL)...")
 	lsn, err := s.d.N1.GetWALReceiverReceivedLSN(ctx)
 	if err != nil {
 		return err
@@ -233,51 +261,13 @@ func stripPrimaryConninfo(content string) string {
 	return strings.Join(kept, "\n")
 }
 
-// --- WaitReplayComplete: replay >= received ---
-
-type waitReplayComplete struct{ d Deps }
-
-func (s *waitReplayComplete) ID() runner.StepID { return "WaitReplayComplete" }
-func (s *waitReplayComplete) Check(ctx context.Context) (bool, error) {
-	return s.replayCaughtUp(ctx)
-}
-func (s *waitReplayComplete) Run(ctx context.Context) error {
-	s.d.logf("проверяю, что N1 доиграл WAL до received_lsn=%s...", s.d.Mgr.Get().Artifacts.ReceivedLSN)
-	caught, err := s.replayCaughtUp(ctx)
-	if err != nil {
-		return err
-	}
-	if !caught {
-		return fmt.Errorf("isolate: replay has not reached received_lsn yet; re-run pg-upgrade to retry")
-	}
-	s.d.logf("replay_lsn >= received_lsn — N1 доиграл весь принятый WAL")
-	return nil
-}
-func (s *waitReplayComplete) replayCaughtUp(ctx context.Context) (bool, error) {
-	received := s.d.Mgr.Get().Artifacts.ReceivedLSN
-	if received == "" {
-		return false, fmt.Errorf("isolate: received_lsn not captured")
-	}
-	replayStr, err := s.d.N1.GetLastWALReplayLSN(ctx)
-	if err != nil {
-		return false, err
-	}
-	if replayStr == "" {
-		return false, fmt.Errorf("isolate: replay_lsn is NULL (N1 has not replayed any WAL)")
-	}
-	recv, err := pglogrepl.ParseLSN(received)
-	if err != nil {
-		return false, fmt.Errorf("isolate: parse received_lsn: %w", err)
-	}
-	replay, err := pglogrepl.ParseLSN(replayStr)
-	if err != nil {
-		return false, fmt.Errorf("isolate: parse replay_lsn: %w", err)
-	}
-	return replay >= recv, nil
-}
-
-// --- VerifyN1Detached: the disconnect must still hold before we freeze ---
-
+// --- VerifyN1Detached: the disconnect must hold before we measure the freeze point ---
+//
+// Runs BEFORE WaitReplayDrained: the settle measurement is only valid if no new
+// WAL can arrive while replay drains. The walreceiver shutdown after the reload
+// is async, so poll for it to go inactive rather than failing on the first read;
+// a receiver that never goes inactive is a re-attach (paused Patroni restoring
+// primary_conninfo) and must fail loudly.
 type verifyN1Detached struct{ d Deps }
 
 func (s *verifyN1Detached) ID() runner.StepID { return "VerifyN1Detached" }
@@ -286,20 +276,117 @@ func (s *verifyN1Detached) ID() runner.StepID { return "VerifyN1Detached" }
 // re-verify on every (re-)entry.
 func (s *verifyN1Detached) Check(context.Context) (bool, error) { return false, nil }
 func (s *verifyN1Detached) Run(ctx context.Context) error {
-	s.d.logf("проверяю, что N1 не переподключился к WAL (walreceiver должен быть пуст)...")
-	active, err := s.d.N1.IsWALReceiverActive(ctx)
-	if err != nil {
+	s.d.logf("проверяю, что N1 не переподключился к WAL (жду, пока walreceiver станет пустым)...")
+	wctx, cancel := context.WithTimeout(ctx, detachConfirmTimeout)
+	defer cancel()
+	if err := waitReceiverInactive(wctx, s.d.N1, detachConfirmInterval); err != nil {
 		return err
-	}
-	if active {
-		// DisconnectFromWAL cleared primary_conninfo, but something put N1 back on
-		// the WAL stream — typically Patroni re-applying its managed
-		// primary_conninfo even while paused. If we recorded target_lsn now, N1
-		// would keep advancing past it and the upgrade boundary would break.
-		return fmt.Errorf("isolate: N1 re-attached to WAL (walreceiver is active again, primary_conninfo was restored — usually paused Patroni reconciling it). Stop Patroni on N1 (systemctl stop patroni — leaves postgres running in this setup), re-clear primary_conninfo, then re-run; otherwise N1 drifts past target_lsn")
 	}
 	s.d.logf("N1 не переподключился — приёмник пуст")
 	return nil
+}
+
+// waitReceiverInactive polls until N1's walreceiver is inactive, or ctx expires.
+// A persistently-active receiver after DisconnectFromWAL means primary_conninfo
+// was restored (typically paused Patroni reconciling it) — N1 would drift past
+// target_lsn, so surface it loudly.
+func waitReceiverInactive(ctx context.Context, n1 pg.Client, interval time.Duration) error {
+	for {
+		active, err := n1.IsWALReceiverActive(ctx)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("isolate: N1 re-attached to WAL (walreceiver still active, primary_conninfo was restored — usually paused Patroni reconciling it). Stop Patroni on N1 (systemctl stop patroni — leaves postgres running in this setup), re-clear primary_conninfo, then re-run; otherwise N1 drifts past target_lsn: %w", ctx.Err())
+		case <-time.After(interval):
+		}
+	}
+}
+
+// --- WaitReplayDrained: let replay settle to N1's true freeze point (X') ---
+//
+// With the receiver confirmed gone (VerifyN1Detached), no new WAL can arrive, so
+// replay_lsn climbs to the end of received WAL and then holds. The held value is
+// X' — N1's true physical freeze point. Recording target_lsn from a still-
+// climbing replay was the undershoot bug; here we wait for it to stop moving.
+type waitReplayDrained struct{ d Deps }
+
+func (s *waitReplayDrained) ID() runner.StepID { return "WaitReplayDrained" }
+
+// Check short-circuits once target_lsn is recorded: replay was already drained
+// and frozen on a prior pass, so don't re-poll.
+func (s *waitReplayDrained) Check(context.Context) (bool, error) {
+	return s.d.Mgr.Get().Artifacts.TargetLSN != "", nil
+}
+func (s *waitReplayDrained) Run(ctx context.Context) error {
+	s.d.logf("жду, пока replay_lsn на N1 перестанет расти (полный слив принятого WAL после отключения)...")
+	wctx, cancel := context.WithTimeout(ctx, replayDrainTimeout)
+	defer cancel()
+	settled, err := waitReplaySettled(wctx, s.d.N1, replayDrainInterval, replayStableSamples)
+	if err != nil {
+		return err
+	}
+	// Sanity: the settled point must be at least the pre-disconnect received_lsn
+	// lower bound. Below it means we measured a stale early replay (or N1 never
+	// drained the WAL it had already received), and target_lsn would undershoot.
+	if recv := s.d.Mgr.Get().Artifacts.ReceivedLSN; recv != "" {
+		r, err := pglogrepl.ParseLSN(recv)
+		if err != nil {
+			return fmt.Errorf("isolate: parse received_lsn: %w", err)
+		}
+		st, err := pglogrepl.ParseLSN(settled)
+		if err != nil {
+			return fmt.Errorf("isolate: parse settled replay_lsn: %w", err)
+		}
+		if st < r {
+			return fmt.Errorf("isolate: settled replay_lsn %s is below the pre-disconnect received_lsn %s — N1 has not drained the WAL it received; re-run", settled, recv)
+		}
+	}
+	s.d.logf("replay_lsn устаканился на %s — N1 слил весь принятый WAL (это и есть target)", settled)
+	return nil
+}
+
+// waitReplaySettled polls replay_lsn until it stops advancing across `samples`
+// consecutive reads `interval` apart, then returns the settled LSN. It re-checks
+// that the walreceiver stays inactive each iteration so a Patroni re-attach
+// (which would keep replay advancing forever) fails fast instead of timing out.
+func waitReplaySettled(ctx context.Context, n1 pg.Client, interval time.Duration, samples int) (string, error) {
+	var last string
+	matches := 0
+	for {
+		active, err := n1.IsWALReceiverActive(ctx)
+		if err != nil {
+			return "", err
+		}
+		if active {
+			return "", fmt.Errorf("isolate: N1 re-attached to WAL while replay was draining (walreceiver active again — primary_conninfo restored, usually paused Patroni). Stop Patroni on N1 and re-run; otherwise N1 drifts past target_lsn")
+		}
+		cur, err := n1.GetLastWALReplayLSN(ctx)
+		if err != nil {
+			return "", err
+		}
+		if cur == "" {
+			return "", fmt.Errorf("isolate: replay_lsn is NULL (N1 has not replayed any WAL)")
+		}
+		if cur == last {
+			matches++
+		} else {
+			matches = 1
+			last = cur
+		}
+		if matches >= samples {
+			return cur, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("isolate: replay_lsn did not settle (still advancing — N1 has not finished draining received WAL) before timeout: %w", ctx.Err())
+		case <-time.After(interval):
+		}
+	}
 }
 
 // --- RecordTargetLSN + post-phase invariant ---
@@ -348,7 +435,7 @@ var (
 	_ runner.Step = (*stopPatroniOnN1)(nil)
 	_ runner.Step = (*captureReceivedLSN)(nil)
 	_ runner.Step = (*disconnectN1)(nil)
-	_ runner.Step = (*waitReplayComplete)(nil)
 	_ runner.Step = (*verifyN1Detached)(nil)
+	_ runner.Step = (*waitReplayDrained)(nil)
 	_ runner.Step = (*recordTargetLSN)(nil)
 )

@@ -40,13 +40,15 @@ Patroni. Это FSM из 8 фаз; каждый шаг **идемпотенте�
 |---|---|---|
 | PausePatroni | поставить кластер в maintenance и **дождаться применения** на ноде (иначе стоп Patroni грейсфул-погасит postgres) | `PATCH /config {"pause":true}` → поллинг `GET /patroni` до `pause:true` |
 | StopPatroniOnN1 | остановить Patroni на N1, чтобы он не вернул `primary_conninfo` | `old_patroni_stop_command` (напр. `systemctl stop patroni`, postgres остаётся жив) |
-| CaptureReceivedLSN | запомнить, сколько WAL N1 уже принял | `SELECT COALESCE(flushed_lsn, received_lsn) FROM pg_stat_wal_receiver;` |
+| CaptureReceivedLSN | запомнить **нижнюю границу** принятого WAL (до отключения) | `SELECT COALESCE(flushed_lsn, received_lsn) FROM pg_stat_wal_receiver;` |
 | DisconnectN1FromWAL | отцепить N1 от стрима (PG13+: без рестарта) | `ALTER SYSTEM SET primary_conninfo='';` · `SELECT pg_reload_conf();` |
-| WaitReplayComplete | дождаться, пока N1 доиграет принятый WAL | `SELECT pg_last_wal_replay_lsn();` ≥ received |
-| VerifyN1Detached | guard: приёмник не воскрес (Patroni не переподключил) | `SELECT count(*)>0 FROM pg_stat_wal_receiver;` (должно быть false) |
-| RecordTargetLSN | записать `target_lsn = pg_last_wal_replay_lsn()`; проверить инвариант | требует `slot.confirmed_flush_lsn ≤ target_lsn` |
+| VerifyN1Detached | поллить, пока приёмник не станет пустым; не воскрес ли (Patroni не переподключил) | `SELECT count(*)>0 FROM pg_stat_wal_receiver;` → ждём `false` |
+| WaitReplayDrained | дождаться, пока `replay_lsn` **перестанет расти** (3 равных отсчёта подряд) — это X', истинная точка заморозки; проверить `≥ received` | `SELECT pg_last_wal_replay_lsn();` до стабилизации |
+| RecordTargetLSN | записать `target_lsn = pg_last_wal_replay_lsn()` (= X'); проверить инвариант | требует `slot.confirmed_flush_lsn ≤ target_lsn` |
 
 После фазы N1 — standby без апстрима, replay стоит на `target_lsn`, таймлайн прежний.
+
+> **Почему «дождаться стабилизации», а не `replay ≥ received`.** `received_lsn` читается *до* отключения, пока приёмник ещё стримит, поэтому это лишь **нижняя граница**: к моменту, когда `primary_conninfo` реально очищен, N1 принял больше — до X'. Если записать `target_lsn`, пока `replay` ещё догоняет X', то коммиты `(target, X']` уже физически в N1/PG17, но прямая подписка переотдаст их → дубликаты. Поэтому сначала `VerifyN1Detached` гарантирует, что новый WAL больше не придёт, затем `WaitReplayDrained` ждёт, пока `replay` упрётся в конец принятого WAL и замрёт — это и есть X'. (Ждать ровно `replay == received` нельзя: приёмник мог флашнуть середину записи, и `replay` никогда её не догонит.)
 
 ---
 

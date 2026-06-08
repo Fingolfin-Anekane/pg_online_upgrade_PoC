@@ -24,8 +24,10 @@ type fakePG struct {
 	createdSlot     string
 	receivedLSN     string
 	walRcvActive    bool
+	walRcvActiveSeq []bool // successive IsWALReceiverActive results; falls back to walRcvActive
 	disconnected    bool
 	replayLSN       string
+	replaySeq       []string // successive GetLastWALReplayLSN results; falls back to replayLSN
 	checkpoints     int
 	serverVersion   int
 	conninfoCleared bool

@@ -18,9 +18,23 @@ import (
 func (f *fakePG) GetWALReceiverReceivedLSN(context.Context) (string, error) {
 	return f.receivedLSN, nil
 }
-func (f *fakePG) IsWALReceiverActive(context.Context) (bool, error)   { return f.walRcvActive, nil }
-func (f *fakePG) DisconnectFromWAL(context.Context) error             { f.disconnected = true; return nil }
-func (f *fakePG) GetLastWALReplayLSN(context.Context) (string, error) { return f.replayLSN, nil }
+func (f *fakePG) IsWALReceiverActive(context.Context) (bool, error) {
+	if len(f.walRcvActiveSeq) > 0 {
+		v := f.walRcvActiveSeq[0]
+		f.walRcvActiveSeq = f.walRcvActiveSeq[1:]
+		return v, nil
+	}
+	return f.walRcvActive, nil
+}
+func (f *fakePG) DisconnectFromWAL(context.Context) error { f.disconnected = true; return nil }
+func (f *fakePG) GetLastWALReplayLSN(context.Context) (string, error) {
+	if len(f.replaySeq) > 0 {
+		v := f.replaySeq[0]
+		f.replaySeq = f.replaySeq[1:]
+		return v, nil
+	}
+	return f.replayLSN, nil
+}
 func (f *fakePG) ServerVersionNum(context.Context) (int, error)       { return f.serverVersion, nil }
 func (f *fakePG) ClearPrimaryConninfo(context.Context) error          { f.conninfoCleared = true; return nil }
 
@@ -28,6 +42,9 @@ func TestIsolateRecordsTargetLSN(t *testing.T) {
 	mgr := testMgr(t)
 	require.NoError(t, mgr.Advance("isolate"))
 	require.NoError(t, mgr.SetSlotBaseline(&state.SlotBaseline{ConfirmedFlushLSN: "0/10"}))
+
+	// Keep the settle/detach polls fast in this full-flow test.
+	defer setReplayTimingForTest(t)()
 
 	n1 := &fakePG{receivedLSN: "0/3FA20000", walRcvActive: false, replayLSN: "0/3FA20000", serverVersion: 130005}
 	pat := &fakePatroni{} // not yet paused; PausePatroni.Run pauses, then the node applies it
@@ -60,18 +77,27 @@ func TestIsolateInvariantViolation(t *testing.T) {
 	assert.Contains(t, err.Error(), "invariant")
 }
 
-func TestVerifyN1DetachedFailsWhenReceiverReattached(t *testing.T) {
+func TestVerifyN1DetachedFailsWhenReceiverStaysActive(t *testing.T) {
 	// Paused Patroni can re-apply primary_conninfo, reconnecting N1's walreceiver
-	// after DisconnectFromWAL. The guard must catch that (receiver active again)
-	// and fail loudly instead of letting isolate record a stale target_lsn while
-	// N1 silently drifts.
-	n1 := &fakePG{walRcvActive: true}
-	err := (&verifyN1Detached{Deps{N1: n1}}).Run(context.Background())
+	// after DisconnectFromWAL. The guard polls for the receiver to go inactive and
+	// must fail loudly when it never does, instead of letting isolate measure a
+	// settle point while N1 is still silently drifting.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := waitReceiverInactive(ctx, &fakePG{walRcvActive: true}, 5*time.Millisecond)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "re-attached")
 }
 
-func TestVerifyN1DetachedPassesWhenReceiverGone(t *testing.T) {
+func TestVerifyN1DetachedPassesOnceReceiverGoesInactive(t *testing.T) {
+	// Right after DisconnectFromWAL the receiver may still be shutting down; the
+	// guard must tolerate a brief active window and pass once it goes inactive,
+	// not fail on the first read.
+	n1 := &fakePG{walRcvActiveSeq: []bool{true, true, false}}
+	require.NoError(t, waitReceiverInactive(context.Background(), n1, time.Millisecond))
+}
+
+func TestVerifyN1DetachedRunPassesWhenReceiverGone(t *testing.T) {
 	n1 := &fakePG{walRcvActive: false}
 	require.NoError(t, (&verifyN1Detached{Deps{N1: n1}}).Run(context.Background()))
 }
@@ -84,7 +110,7 @@ func TestIsolateRunsVerifyN1DetachedBeforeRecordingTarget(t *testing.T) {
 	}
 	assert.Equal(t, []string{
 		"PausePatroni", "StopPatroniOnN1", "CaptureReceivedLSN", "DisconnectN1FromWAL",
-		"WaitReplayComplete", "VerifyN1Detached", "RecordTargetLSN",
+		"VerifyN1Detached", "WaitReplayDrained", "RecordTargetLSN",
 	}, names)
 }
 
@@ -185,17 +211,67 @@ func TestCaptureReceivedLSNEmptyErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "wal receiver already empty")
 }
 
-func TestWaitReplayNotCaughtUp(t *testing.T) {
+// setReplayTimingForTest shrinks the settle/detach poll timings so tests don't
+// sleep for real seconds, restoring them on cleanup.
+func setReplayTimingForTest(t *testing.T) func() {
+	t.Helper()
+	o1, o2, o3, o4 := replayDrainInterval, replayDrainTimeout, detachConfirmInterval, detachConfirmTimeout
+	replayDrainInterval, replayDrainTimeout = time.Millisecond, time.Second
+	detachConfirmInterval, detachConfirmTimeout = time.Millisecond, time.Second
+	return func() {
+		replayDrainInterval, replayDrainTimeout = o1, o2
+		detachConfirmInterval, detachConfirmTimeout = o3, o4
+	}
+}
+
+func TestWaitReplaySettledReturnsStablePoint(t *testing.T) {
+	// replay climbs (3 distinct reads) then holds at 0/3FA20000; settled must be
+	// that held value (X'), not an earlier climbing read.
+	n1 := &fakePG{replaySeq: []string{"0/3FA10000", "0/3FA1F000", "0/3FA20000", "0/3FA20000", "0/3FA20000"}}
+	settled, err := waitReplaySettled(context.Background(), n1, time.Millisecond, 3)
+	require.NoError(t, err)
+	assert.Equal(t, "0/3FA20000", settled)
+}
+
+func TestWaitReplaySettledFailsOnReattach(t *testing.T) {
+	// If the walreceiver goes active mid-drain (Patroni restored primary_conninfo),
+	// replay would keep advancing past target — fail fast instead of waiting out.
+	n1 := &fakePG{walRcvActiveSeq: []bool{false, true}, replaySeq: []string{"0/10", "0/20"}}
+	_, err := waitReplaySettled(context.Background(), n1, time.Millisecond, 3)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "re-attached")
+}
+
+func TestWaitReplaySettledTimesOutWhenAlwaysAdvancing(t *testing.T) {
+	// replay never holds still -> never settles -> ctx deadline returns an error.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	n1 := &fakePG{replaySeq: []string{"0/10", "0/20", "0/30", "0/40", "0/50", "0/60", "0/70", "0/80", "0/90", "0/A0"}}
+	_, err := waitReplaySettled(ctx, n1, 5*time.Millisecond, 3)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "settle")
+}
+
+func TestWaitReplayDrainedRejectsBelowReceived(t *testing.T) {
+	// The settled replay must not be below the pre-disconnect received_lsn lower
+	// bound; if it is, we measured a stale early point and target would undershoot.
+	defer setReplayTimingForTest(t)()
 	mgr := testMgr(t)
 	require.NoError(t, mgr.Advance("isolate"))
 	require.NoError(t, mgr.SetReceivedLSN("0/3FA20000"))
-	n1 := &fakePG{replayLSN: "0/10"} // replay behind received
-	step := &waitReplayComplete{Deps{Mgr: mgr, N1: n1}}
-	done, err := step.Check(context.Background())
-	require.NoError(t, err)
-	assert.False(t, done)
-	err = step.Run(context.Background())
+	n1 := &fakePG{replayLSN: "0/100"} // settles immediately at 0/100, below received
+	err := (&waitReplayDrained{Deps{Mgr: mgr, N1: n1}}).Run(context.Background())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "below")
+}
+
+func TestWaitReplayDrainedSkippedOnceTargetRecorded(t *testing.T) {
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.SetTargetLSN("0/3FA20000"))
+	done, err := (&waitReplayDrained{Deps{Mgr: mgr}}).Check(context.Background())
+	require.NoError(t, err)
+	assert.True(t, done)
 }
 
 func TestDisconnectPG13Reload(t *testing.T) {
