@@ -125,3 +125,19 @@ func TestVerifySlotDrainedMissingSlot(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing")
 }
+
+func TestVerifySlotDrainedRejectsInvalidatedSlot(t *testing.T) {
+	// max_slot_wal_keep_size invalidated the slot during/after the drain
+	// (wal_status=lost): the tail WAL is gone, so verification must hard-fail
+	// rather than report a clean drain.
+	mgr := testMgr(t)
+	require.NoError(t, mgr.Advance("isolate"))
+	require.NoError(t, mgr.Advance("drain"))
+	require.NoError(t, mgr.SetDrainReport(&state.DrainReport{FinalFlushLSN: "0/3FA20000", LastCommitLSN: "0/3FA20000"}))
+	primary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", ConfirmedFlushLSN: "0/3FA20000", WALStatus: "lost"}}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{SlotName: "slot_up"}}, Mgr: mgr,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	err := (&verifySlotDrained{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalidated")
+}

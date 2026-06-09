@@ -43,8 +43,9 @@ func TestCatchupCreatesSubAndWaitsLag(t *testing.T) {
 	// scope/data_dir/bin_dir already match targets -> PatchNewPatroniConfig is
 	// skipped, keeping this test focused on the subscription + lag steps.
 	require.NoError(t, os.WriteFile(patroniCfg, []byte("scope: prod-17\npostgresql:\n  data_dir: /nd\n  bin_dir: /n\n"), 0o644))
-	pg17 := &fakePG{}                                    // subscription created in the loop (subExists flips true)
-	oldPrimary := &fakePG{subLag: &pg.SubscriptionLag{}} // publisher: zero lag
+	pg17 := &fakePG{} // subscription created in the loop (subExists flips true)
+	// publisher: zero lag + a healthy (reserved) slot so the invalidation guard passes
+	oldPrimary := &fakePG{subLag: &pg.SubscriptionLag{}, slot: &pg.ReplicationSlot{Name: "slot_up", WALStatus: "reserved"}}
 	// old cluster stopped (oldRunning false), PG17 already up (running) -> start skipped
 	tools := &fakeTools{running: true, newDataDir: "/nd"}
 	newPat := &fakePatroni{cluster: &patroni.ClusterInfo{Members: []patroni.Member{
@@ -236,4 +237,23 @@ func TestPollLagZeroTimesOutWhenNeverZero(t *testing.T) {
 	err := pollLagZero(context.Background(), zero, 2, time.Millisecond)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "zero")
+}
+
+func TestCreateForwardSubscriptionRejectsInvalidatedSlot(t *testing.T) {
+	// The drained slot on the publisher was invalidated by max_slot_wal_keep_size
+	// while pg_upgrade ran (wal_status=lost). Attaching the subscription now would
+	// silently lose the post-target tail, so the step must fail loudly instead.
+	mgr := testMgr(t)
+	require.NoError(t, mgr.SetPrimaryHost("primary.host"))
+	pg17 := &fakePG{}
+	oldPrimary := &fakePG{slot: &pg.ReplicationSlot{Name: "slot_up", WALStatus: "lost"}}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{
+		SubscriptionName: "sub_up", PublicationName: "pub_up", SlotName: "slot_up",
+	}, PG: config.PGConfig{SuperuserDSN: "host=tmpl"}}, Mgr: mgr,
+		PG17:    func(context.Context) (pg.Client, error) { return pg17, nil },
+		Primary: func(context.Context) (pg.Client, error) { return oldPrimary, nil }}
+	err := (&createForwardSubscription{d}).Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalidated")
+	assert.Equal(t, "", pg17.createdSub) // never attached
 }

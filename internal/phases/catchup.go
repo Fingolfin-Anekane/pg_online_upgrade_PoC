@@ -255,6 +255,24 @@ func (s *createForwardSubscription) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The forward subscription reuses the drained slot on the old primary
+	// (create_slot=false). If max_slot_wal_keep_size invalidated that slot while
+	// pg_upgrade ran (the slot sat idle while the old primary kept writing), the
+	// tail WAL is gone — attaching now would silently lose changes. Guard first.
+	primary, err := s.d.Primary(ctx)
+	if err != nil {
+		return err
+	}
+	slot, err := primary.GetReplicationSlot(ctx, s.d.Cfg.Upgrade.SlotName)
+	if err != nil {
+		return err
+	}
+	if slot == nil {
+		return fmt.Errorf("catchup: slot %q missing on the publisher — cannot attach the forward subscription", s.d.Cfg.Upgrade.SlotName)
+	}
+	if err := assertSlotReserved(slot); err != nil {
+		return fmt.Errorf("catchup: %w", err)
+	}
 	primaryDSN, err := connect.DSNForHost(s.d.Cfg.PG.SuperuserDSN, s.d.Mgr.Get().Artifacts.PrimaryHost)
 	if err != nil {
 		return err

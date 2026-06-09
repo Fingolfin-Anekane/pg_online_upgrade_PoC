@@ -2,16 +2,31 @@ package phases
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
 	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
+	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/dmbabuev/pg-upgrade/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// captureLogger records Detail lines so tests can assert on emitted warnings.
+type captureLogger struct{ details []string }
+
+func (c *captureLogger) PhaseStart(runner.PhaseID)                                   {}
+func (c *captureLogger) PhaseDone(runner.PhaseID)                                    {}
+func (c *captureLogger) StepStart(runner.PhaseID, runner.StepID)                     {}
+func (c *captureLogger) StepResult(runner.PhaseID, runner.StepID, runner.StepStatus) {}
+func (c *captureLogger) Detail(format string, args ...any) {
+	c.details = append(c.details, fmt.Sprintf(format, args...))
+}
 
 // fakePG embeds pg.Client; only overridden methods are safe to call. Fields are
 // declared here and reused by isolate_test.go / upgrade_test.go (same package).
@@ -45,7 +60,12 @@ type fakePG struct {
 	droppedPub      []string
 	unfrozen        string
 	inRecoveryErr   error
+	maxSlotWALKeep  string
+	oldestTxnAge    time.Duration
 }
+
+func (f *fakePG) MaxSlotWALKeepSize(context.Context) (string, error)  { return f.maxSlotWALKeep, nil }
+func (f *fakePG) OldestTxnAge(context.Context) (time.Duration, error) { return f.oldestTxnAge, nil }
 
 func (f *fakePG) ShowWALLevel(context.Context) (string, error) { return f.walLevel, nil }
 func (f *fakePG) IsInRecovery(context.Context) (bool, error)   { return f.inRecovery, f.inRecoveryErr }
@@ -165,6 +185,33 @@ func TestPrepareRejectsNonReplicaN1(t *testing.T) {
 	err := step.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in recovery")
+}
+
+func TestVerifyPrerequisitesWarnsOnSlotRisks(t *testing.T) {
+	// max_slot_wal_keep_size != -1 and a long-running transaction are non-fatal
+	// but must surface as warnings (the hard stop is assertSlotReserved later).
+	primary := &fakePG{walLevel: "logical", maxSlotWALKeep: "0", oldestTxnAge: 10 * time.Minute}
+	n1 := &fakePG{inRecovery: true, serverVersion: 130005}
+	log := &captureLogger{}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{TargetNode: "n1"}},
+		Mgr: testMgr(t), N1: n1, Log: log,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	require.NoError(t, (&verifyPrerequisites{d}).Run(context.Background()))
+	joined := strings.Join(log.details, "\n")
+	assert.Contains(t, joined, "max_slot_wal_keep_size")
+	assert.Contains(t, joined, "транзакц")
+}
+
+func TestVerifyPrerequisitesNoWarnOnSafeConfig(t *testing.T) {
+	// Unlimited keep size, no long txn -> no slot-risk warnings.
+	primary := &fakePG{walLevel: "logical", maxSlotWALKeep: "-1", oldestTxnAge: 0}
+	n1 := &fakePG{inRecovery: true, serverVersion: 130005}
+	log := &captureLogger{}
+	d := Deps{Cfg: config.Config{Upgrade: config.UpgradeConfig{TargetNode: "n1"}},
+		Mgr: testMgr(t), N1: n1, Log: log,
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	require.NoError(t, (&verifyPrerequisites{d}).Run(context.Background()))
+	assert.NotContains(t, strings.Join(log.details, "\n"), "ПРЕДУПРЕЖДЕНИЕ")
 }
 
 func TestPrepareRejectsBelowPG10(t *testing.T) {

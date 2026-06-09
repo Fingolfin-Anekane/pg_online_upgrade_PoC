@@ -94,6 +94,24 @@ func (s *verifyPrerequisites) Run(ctx context.Context) error {
 		return fmt.Errorf("prepare: N1 server_version_num %d is below the minimum supported PostgreSQL 10", v)
 	}
 	s.d.logf("версия N1 server_version_num=%d (>= PG10) — ок", v)
+
+	// Preflight (advisory, non-fatal): surface conditions that can invalidate the
+	// logical slot mid-upgrade — max_slot_wal_keep_size bounding retained WAL, and
+	// long-running transactions pinning restart_lsn far back. The hard stop, if a
+	// slot actually gets invalidated, is assertSlotReserved in drain/catchup.
+	maxKeep, err := primary.MaxSlotWALKeepSize(ctx)
+	if err != nil {
+		s.d.logf("⚠ не смог прочитать max_slot_wal_keep_size: %v", err)
+		maxKeep = ""
+	}
+	oldestTxn, err := primary.OldestTxnAge(ctx)
+	if err != nil {
+		s.d.logf("⚠ не смог прочитать возраст открытых транзакций на primary: %v", err)
+		oldestTxn = 0
+	}
+	for _, warn := range slotRiskWarnings(maxKeep, oldestTxn, longTxnWarnThreshold) {
+		s.d.logf("⚠ ПРЕДУПРЕЖДЕНИЕ: %s", warn)
+	}
 	return nil
 }
 

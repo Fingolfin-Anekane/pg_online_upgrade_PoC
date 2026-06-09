@@ -3,6 +3,7 @@ package pg_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	pgclient "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	pgxmock "github.com/pashagolub/pgxmock/v3"
@@ -107,8 +108,8 @@ func TestGetReplicationSlot_Exists(t *testing.T) {
 
 	mock.ExpectQuery("SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text").
 		WithArgs("slot_upgrade").
-		WillReturnRows(pgxmock.NewRows([]string{"slot_name", "restart_lsn", "confirmed_flush_lsn"}).
-			AddRow("slot_upgrade", "0/1A000000", "0/1A000100"))
+		WillReturnRows(pgxmock.NewRows([]string{"slot_name", "restart_lsn", "confirmed_flush_lsn", "wal_status"}).
+			AddRow("slot_upgrade", "0/1A000000", "0/1A000100", "reserved"))
 
 	c := pgclient.NewFromPool(mock)
 	slot, err := c.GetReplicationSlot(context.Background(), "slot_upgrade")
@@ -117,6 +118,7 @@ func TestGetReplicationSlot_Exists(t *testing.T) {
 	assert.Equal(t, "slot_upgrade", slot.Name)
 	assert.Equal(t, "0/1A000000", slot.RestartLSN)
 	assert.Equal(t, "0/1A000100", slot.ConfirmedFlushLSN)
+	assert.Equal(t, "reserved", slot.WALStatus)
 }
 
 func TestGetReplicationSlot_NotExists(t *testing.T) {
@@ -126,7 +128,7 @@ func TestGetReplicationSlot_NotExists(t *testing.T) {
 
 	mock.ExpectQuery("SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text").
 		WithArgs("slot_upgrade").
-		WillReturnRows(pgxmock.NewRows([]string{"slot_name", "restart_lsn", "confirmed_flush_lsn"}))
+		WillReturnRows(pgxmock.NewRows([]string{"slot_name", "restart_lsn", "confirmed_flush_lsn", "wal_status"}))
 
 	c := pgclient.NewFromPool(mock)
 	slot, err := c.GetReplicationSlot(context.Background(), "slot_upgrade")
@@ -147,8 +149,8 @@ func TestCreateLogicalSlot_ReadsBackFromCatalog(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text").
 		WithArgs("slot_upgrade").
-		WillReturnRows(pgxmock.NewRows([]string{"slot_name", "restart_lsn", "confirmed_flush_lsn"}).
-			AddRow("slot_upgrade", "0/1A000000", "0/1A000100"))
+		WillReturnRows(pgxmock.NewRows([]string{"slot_name", "restart_lsn", "confirmed_flush_lsn", "wal_status"}).
+			AddRow("slot_upgrade", "0/1A000000", "0/1A000100", "reserved"))
 
 	c := pgclient.NewFromPool(mock)
 	slot, err := c.CreateLogicalSlot(context.Background(), "slot_upgrade", "pgoutput")
@@ -293,5 +295,35 @@ func TestCountAppBackends(t *testing.T) {
 	n, err := c.CountAppBackends(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 3, n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMaxSlotWALKeepSize(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery("max_slot_wal_keep_size").
+		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow("-1"))
+
+	c := pgclient.NewFromPool(mock)
+	v, err := c.MaxSlotWALKeepSize(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "-1", v)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestOldestTxnAge(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery("pg_stat_activity").
+		WillReturnRows(pgxmock.NewRows([]string{"epoch"}).AddRow(float64(420)))
+
+	c := pgclient.NewFromPool(mock)
+	age, err := c.OldestTxnAge(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 420*time.Second, age)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

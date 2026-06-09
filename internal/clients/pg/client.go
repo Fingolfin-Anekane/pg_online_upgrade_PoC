@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -25,6 +26,8 @@ type Client interface {
 	Checkpoint(ctx context.Context) error
 	GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error)
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
+	MaxSlotWALKeepSize(ctx context.Context) (string, error)
+	OldestTxnAge(ctx context.Context) (time.Duration, error)
 	CreatePublication(ctx context.Context, name string) error
 	PublicationExists(ctx context.Context, name string) (bool, error)
 	CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error
@@ -47,6 +50,11 @@ type ReplicationSlot struct {
 	Name              string
 	RestartLSN        string
 	ConfirmedFlushLSN string
+	// WALStatus is pg_replication_slots.wal_status (PG13+): reserved | extended |
+	// unreserved | lost. Empty on PG10–12, where the column does not exist and
+	// slots are never invalidated by size (no max_slot_wal_keep_size). "lost"
+	// means the WAL the slot needed was removed — the slot is unusable.
+	WALStatus string
 }
 
 type SubscriptionLag struct {
@@ -188,10 +196,14 @@ func (c *internalClient) Checkpoint(ctx context.Context) error {
 
 func (c *internalClient) GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error) {
 	var s ReplicationSlot
+	// wal_status exists only on PG13+. Read it via to_jsonb (which only carries
+	// columns the running server actually has) so one query works on PG10–17: on
+	// older servers ->> yields NULL -> '' (no size-based invalidation there).
 	err := c.q.QueryRow(ctx,
-		"SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text "+
-			"FROM pg_replication_slots WHERE slot_name = $1", name).
-		Scan(&s.Name, &s.RestartLSN, &s.ConfirmedFlushLSN)
+		"SELECT slot_name, restart_lsn::text, confirmed_flush_lsn::text, "+
+			"COALESCE(to_jsonb(s) ->> 'wal_status', '') "+
+			"FROM pg_replication_slots s WHERE slot_name = $1", name).
+		Scan(&s.Name, &s.RestartLSN, &s.ConfirmedFlushLSN, &s.WALStatus)
 	// No row means the slot does not exist — a normal "not found", not an error.
 	// CreateLogicalSlot deliberately does NOT swallow ErrNoRows: a create that
 	// returns no row IS a real failure.
@@ -217,6 +229,32 @@ func (c *internalClient) CreateLogicalSlot(ctx context.Context, name, plugin str
 		return nil, fmt.Errorf("slot %q not found after creation", name)
 	}
 	return slot, nil
+}
+
+// MaxSlotWALKeepSize returns the max_slot_wal_keep_size setting as a raw string
+// ("-1" = unlimited). Uses current_setting(..., missing_ok=true), which returns
+// NULL (-> "") instead of erroring on PG10–12 where the GUC does not exist.
+func (c *internalClient) MaxSlotWALKeepSize(ctx context.Context) (string, error) {
+	var v string
+	if err := c.q.QueryRow(ctx,
+		"SELECT COALESCE(current_setting('max_slot_wal_keep_size', true), '')").Scan(&v); err != nil {
+		return "", fmt.Errorf("pg: read max_slot_wal_keep_size: %w", err)
+	}
+	return v, nil
+}
+
+// OldestTxnAge returns the age of the oldest open transaction on the server
+// (excluding this backend), or 0 if none. A long-running transaction pins the
+// logical slot's restart_lsn/catalog_xmin, so this feeds the preflight warning.
+func (c *internalClient) OldestTxnAge(ctx context.Context) (time.Duration, error) {
+	var secs float64
+	if err := c.q.QueryRow(ctx,
+		`SELECT COALESCE(EXTRACT(EPOCH FROM (now() - min(xact_start))), 0)
+		   FROM pg_stat_activity
+		  WHERE xact_start IS NOT NULL AND pid <> pg_backend_pid()`).Scan(&secs); err != nil {
+		return 0, fmt.Errorf("pg: read oldest transaction age: %w", err)
+	}
+	return time.Duration(secs * float64(time.Second)), nil
 }
 
 func (c *internalClient) CreatePublication(ctx context.Context, name string) error {
@@ -445,6 +483,12 @@ func (p *PoolClient) GetReplicationSlot(ctx context.Context, name string) (*Repl
 }
 func (p *PoolClient) CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error) {
 	return p.ic().CreateLogicalSlot(ctx, name, plugin)
+}
+func (p *PoolClient) MaxSlotWALKeepSize(ctx context.Context) (string, error) {
+	return p.ic().MaxSlotWALKeepSize(ctx)
+}
+func (p *PoolClient) OldestTxnAge(ctx context.Context) (time.Duration, error) {
+	return p.ic().OldestTxnAge(ctx)
 }
 func (p *PoolClient) CreatePublication(ctx context.Context, name string) error {
 	return p.ic().CreatePublication(ctx, name)

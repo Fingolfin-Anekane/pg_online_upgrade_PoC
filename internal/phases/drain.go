@@ -88,6 +88,12 @@ func (s *verifySlotDrained) Run(ctx context.Context) error {
 	if slot == nil {
 		return fmt.Errorf("drain: slot %s missing after drain", s.d.Cfg.Upgrade.SlotName)
 	}
+	// Before trusting confirmed_flush, make sure the slot itself is still alive:
+	// max_slot_wal_keep_size could have invalidated it (wal_status lost/unreserved),
+	// in which case the post-target tail WAL is gone and catchup would lose data.
+	if err := assertSlotReserved(slot); err != nil {
+		return fmt.Errorf("drain: %w", err)
+	}
 	flushLSN, err := pglogrepl.ParseLSN(slot.ConfirmedFlushLSN)
 	if err != nil {
 		return fmt.Errorf("drain: parse confirmed_flush_lsn %q: %w", slot.ConfirmedFlushLSN, err)
