@@ -38,6 +38,10 @@ type Deps struct {
 	// which manages the old, paused cluster).
 	NewPatroni patroni.Client
 
+	// Shadow returns a pg client to the shadow cluster's leader (PG13 standby
+	// during provision, PG17 after upgrade). Resolved lazily.
+	Shadow func(ctx context.Context) (pg.Client, error)
+
 	// WriteSignal persists the DSN-swap signal file (injected for testability).
 	WriteSignal func(path string, data []byte) error
 

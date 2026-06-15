@@ -107,6 +107,7 @@ type fakePatroni struct {
 	paused     bool
 	nodePaused bool  // applied maintenance state reported by NodePaused
 	err        error // returned by GetCluster (e.g. to simulate an unreachable REST)
+	standbySet bool  // toggled by SetStandbyCluster/ClearStandbyCluster
 }
 
 func (f *fakePatroni) GetCluster(context.Context) (*patroni.ClusterInfo, error) {
@@ -119,8 +120,14 @@ func (f *fakePatroni) NodePaused(context.Context) (bool, error) { return f.nodeP
 func (f *fakePatroni) Pause(context.Context) error              { f.paused = true; return nil }
 func (f *fakePatroni) Resume(context.Context) error             { f.paused = false; return nil }
 
-func (f *fakePatroni) SetStandbyCluster(context.Context, string, int, string) error { return nil }
-func (f *fakePatroni) ClearStandbyCluster(context.Context) error                    { return nil }
+func (f *fakePatroni) SetStandbyCluster(context.Context, string, int, string) error {
+	f.standbySet = true
+	return nil
+}
+func (f *fakePatroni) ClearStandbyCluster(context.Context) error {
+	f.standbySet = false
+	return nil
+}
 
 func testMgr(t *testing.T) *state.Manager {
 	t.Helper()
