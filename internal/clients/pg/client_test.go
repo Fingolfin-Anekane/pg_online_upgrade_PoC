@@ -327,3 +327,30 @@ func TestOldestTxnAge(t *testing.T) {
 	assert.Equal(t, 420*time.Second, age)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestLockDDL(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	// Idempotent install: replace the function, drop any prior trigger, create it.
+	mock.ExpectExec("CREATE EVENT TRIGGER pg_upgrade_ddl_lock").
+		WillReturnResult(pgxmock.NewResult("CREATE", 0))
+
+	c := pgclient.NewFromPool(mock)
+	require.NoError(t, c.LockDDL(context.Background()))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUnlockDDL(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectExec("DROP EVENT TRIGGER IF EXISTS pg_upgrade_ddl_lock").
+		WillReturnResult(pgxmock.NewResult("DROP", 0))
+
+	c := pgclient.NewFromPool(mock)
+	require.NoError(t, c.UnlockDDL(context.Background()))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

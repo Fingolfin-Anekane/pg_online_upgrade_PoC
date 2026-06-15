@@ -28,6 +28,8 @@ type Client interface {
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
 	MaxSlotWALKeepSize(ctx context.Context) (string, error)
 	OldestTxnAge(ctx context.Context) (time.Duration, error)
+	LockDDL(ctx context.Context) error
+	UnlockDDL(ctx context.Context) error
 	CreatePublication(ctx context.Context, name string) error
 	PublicationExists(ctx context.Context, name string) (bool, error)
 	CreateSubscription(ctx context.Context, name, connStr, pubName, slotName string) error
@@ -375,6 +377,36 @@ func (c *internalClient) SetSequenceValue(ctx context.Context, schema, name stri
 	return err
 }
 
+// LockDDL installs an event trigger that rejects any DDL whose session does not
+// set pg_upgrade.allow_ddl = on. The tool's own connections carry that GUC (see
+// NewFromDSN), so its DDL passes; an accidental app migration is rejected.
+// Idempotent: re-running replaces the function and recreates the trigger.
+func (c *internalClient) LockDDL(ctx context.Context) error {
+	_, err := c.q.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION pg_upgrade_block_ddl() RETURNS event_trigger AS $$
+		BEGIN
+			IF current_setting('pg_upgrade.allow_ddl', true) IS DISTINCT FROM 'on' THEN
+				RAISE EXCEPTION 'DDL is locked during the online upgrade (command %)', tg_tag
+					USING HINT = 'pg-upgrade safeguard: an app migration must not run now.';
+			END IF;
+		END;
+		$$ LANGUAGE plpgsql;
+		DROP EVENT TRIGGER IF EXISTS pg_upgrade_ddl_lock;
+		CREATE EVENT TRIGGER pg_upgrade_ddl_lock ON ddl_command_start
+			EXECUTE FUNCTION pg_upgrade_block_ddl();
+	`)
+	return err
+}
+
+// UnlockDDL removes the DDL lock so normal schema changes resume.
+func (c *internalClient) UnlockDDL(ctx context.Context) error {
+	_, err := c.q.Exec(ctx, `
+		DROP EVENT TRIGGER IF EXISTS pg_upgrade_ddl_lock;
+		DROP FUNCTION IF EXISTS pg_upgrade_block_ddl();
+	`)
+	return err
+}
+
 // FreezeForUpgrade installs DML triggers on all user tables that raise an
 // error for any INSERT/UPDATE/DELETE/TRUNCATE. Enforcement is purely
 // trigger-based: sessions with session_replication_role='replica' (the
@@ -490,6 +522,8 @@ func (p *PoolClient) MaxSlotWALKeepSize(ctx context.Context) (string, error) {
 func (p *PoolClient) OldestTxnAge(ctx context.Context) (time.Duration, error) {
 	return p.ic().OldestTxnAge(ctx)
 }
+func (p *PoolClient) LockDDL(ctx context.Context) error   { return p.ic().LockDDL(ctx) }
+func (p *PoolClient) UnlockDDL(ctx context.Context) error { return p.ic().UnlockDDL(ctx) }
 func (p *PoolClient) CreatePublication(ctx context.Context, name string) error {
 	return p.ic().CreatePublication(ctx, name)
 }
