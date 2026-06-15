@@ -12,6 +12,7 @@ import (
 	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
 	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
+	"github.com/dmbabuev/pg-upgrade/internal/state"
 	"github.com/jackc/pglogrepl"
 )
 
@@ -412,7 +413,14 @@ func (s *recordTargetLSN) Run(ctx context.Context) error {
 	s.d.logf("target_lsn=%s записан; проверяю инвариант confirmed_flush_lsn <= target_lsn...", target)
 	// Invariant: SlotBaseline.ConfirmedFlushLSN <= target_lsn, else changes
 	// between baseline and target would be lost.
-	bl := s.d.Mgr.Get().Artifacts.SlotBaseline
+	return assertSlotBaselineBelowTarget(s.d.Mgr.Get().Artifacts.SlotBaseline, target)
+}
+
+// assertSlotBaselineBelowTarget enforces the slot-baseline invariant:
+// SlotBaseline.ConfirmedFlushLSN <= target_lsn. A baseline above the freeze
+// point means the slot was created after the boundary and changes between the
+// baseline and target would be lost.
+func assertSlotBaselineBelowTarget(bl *state.SlotBaseline, target string) error {
 	if bl == nil {
 		return fmt.Errorf("isolate: slot baseline missing")
 	}
@@ -425,7 +433,7 @@ func (s *recordTargetLSN) Run(ctx context.Context) error {
 		return fmt.Errorf("isolate: parse target_lsn: %w", err)
 	}
 	if conf > tgt {
-		return fmt.Errorf("isolate: FATAL invariant violated: confirmed_flush_lsn %s > target_lsn %s (slot created after N1 disconnected)", bl.ConfirmedFlushLSN, target)
+		return fmt.Errorf("isolate: FATAL invariant violated: confirmed_flush_lsn %s > target_lsn %s", bl.ConfirmedFlushLSN, target)
 	}
 	return nil
 }

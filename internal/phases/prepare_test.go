@@ -66,6 +66,12 @@ type fakePG struct {
 	ddlUnlocked     bool
 	physicalSlot    string
 	walCurrent      string
+	droppedSlot     string
+}
+
+func (f *fakePG) DropReplicationSlot(_ context.Context, name string) error {
+	f.droppedSlot = name
+	return nil
 }
 
 func (f *fakePG) CreatePhysicalSlot(_ context.Context, name string) error {
