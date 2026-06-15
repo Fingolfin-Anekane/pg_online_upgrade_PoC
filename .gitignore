@@ -1,3 +1,5 @@
 /pg-upgrade
+/bin/
 /loadtool
 /pg-upgrade-state.json
+/.idea
