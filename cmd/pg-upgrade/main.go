@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/dmbabuev/pg-upgrade/internal/clients/patroni"
@@ -10,6 +11,7 @@ import (
 	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
 	"github.com/dmbabuev/pg-upgrade/internal/connect"
+	"github.com/dmbabuev/pg-upgrade/internal/diskguard"
 	"github.com/dmbabuev/pg-upgrade/internal/phases"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/dmbabuev/pg-upgrade/internal/slotdrain"
@@ -206,11 +208,31 @@ func runCmd(cfgPath *string) *cobra.Command {
 			log := runner.NewConsoleLogger(os.Stdout)
 			d.Log = log
 
-			r := runner.New(phases.Phases1to8(d), mgr, mode, cp, log)
+			var phaseList []runner.Phase
+			switch cfg.EffectiveMode() {
+			case "shadow":
+				// In shadow mode the shadow cluster IS the new cluster; its Patroni REST
+				// is ShadowPatroniURL (overriding the inplace NewPatroniURL).
+				d.NewPatroni = patroni.NewHTTPClient(cfg.Upgrade.ShadowPatroniURL, patAuth)
+				shadowHost, herr := hostFromURL(cfg.Upgrade.ShadowPatroniURL)
+				if herr != nil {
+					return herr
+				}
+				shadowProvider, closeShadow := newHostProvider(cfg.PG.SuperuserDSN, shadowHost)
+				defer closeShadow()
+				d.Shadow = shadowProvider
+				d.ShadowMember = func(apiURL string) patroni.Client { return patroni.NewHTTPClient(apiURL, patAuth) }
+				d.DiskGuard = diskguard.Monitor{Slot: cfg.Upgrade.SlotName, Reader: lazyDiskReader{provider: primaryProvider}}
+				phaseList = phases.PhasesShadow(d)
+			default:
+				phaseList = phases.Phases1to8(d)
+			}
+
+			r := runner.New(phaseList, mgr, mode, cp, log)
 			if err := r.Run(ctx); err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stdout, "\nUpgrade complete (all 8 phases). Operator follow-up: remove stale DCS keys for the old cluster (e.g. etcdctl del /service/<old-scope>/ --prefix).")
+			fmt.Fprintln(os.Stdout, "\nUpgrade complete. Operator follow-up: remove stale DCS keys for the old cluster (e.g. etcdctl del /service/<old-scope>/ --prefix).")
 			return nil
 		},
 	}
@@ -239,6 +261,68 @@ func newPG17Provider(dsn string) (func(context.Context) (pgclient.Client, error)
 		}
 	}
 	return provider, closeFn
+}
+
+// hostFromURL extracts the hostname (no port) from a URL like
+// "http://shadow-leader:8008" -> "shadow-leader".
+func hostFromURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse shadow_patroni_url %q: %w", raw, err)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("shadow_patroni_url %q has no host", raw)
+	}
+	return u.Hostname(), nil
+}
+
+// newHostProvider lazily connects a pg client to a fixed host (DSN derived from
+// the superuser template), plus a closer. Used for the shadow leader.
+func newHostProvider(template, host string) (func(context.Context) (pgclient.Client, error), func()) {
+	var cached pgclient.Client
+	provider := func(ctx context.Context) (pgclient.Client, error) {
+		if cached != nil {
+			return cached, nil
+		}
+		dsn, err := connect.DSNForHost(template, host)
+		if err != nil {
+			return nil, err
+		}
+		c, err := pgclient.NewFromDSN(ctx, dsn)
+		if err != nil {
+			return nil, err
+		}
+		cached = c
+		return cached, nil
+	}
+	closeFn := func() {
+		if cached != nil {
+			cached.Close()
+		}
+	}
+	return provider, closeFn
+}
+
+// lazyDiskReader adapts the lazily-resolved prod-primary provider to
+// diskguard.Reader (the prod client only exists after topology discovery).
+type lazyDiskReader struct {
+	provider func(context.Context) (pgclient.Client, error)
+}
+
+func (l lazyDiskReader) SlotRetainedBytes(ctx context.Context, slot string) (int64, error) {
+	c, err := l.provider(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return c.SlotRetainedBytes(ctx, slot)
+}
+
+func (l lazyDiskReader) MaxSlotWALKeepSize(ctx context.Context) (string, error) {
+	c, err := l.provider(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.MaxSlotWALKeepSize(ctx)
 }
 
 // newPrimaryProvider returns a provider that builds (once) a PG client to the
