@@ -89,6 +89,10 @@ type UpgradeConfig struct {
 	// ShadowNodeCount is the expected node count of the shadow cluster; provision
 	// waits until that many members are healthy.
 	ShadowNodeCount int `yaml:"shadow_node_count"`
+
+	// Mode selects the upgrade topology: "inplace" (default; cannibalize a live
+	// replica) or "shadow" (parallel standby_cluster upgraded in place).
+	Mode string `yaml:"mode"`
 }
 
 type PGConfig struct {
@@ -114,6 +118,14 @@ func (c Config) EffectiveNewScope() string {
 		return c.Upgrade.NewScope
 	}
 	return c.ClusterName + "-17"
+}
+
+// EffectiveMode returns Upgrade.Mode, defaulting to "inplace".
+func (c Config) EffectiveMode() string {
+	if c.Upgrade.Mode == "" {
+		return "inplace"
+	}
+	return c.Upgrade.Mode
 }
 
 func Load(path string) (*Config, error) {
