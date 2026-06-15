@@ -169,6 +169,30 @@ func TestValidateForRun_RejectsNewScopeEqualToClusterName(t *testing.T) {
 	assert.Contains(t, err.Error(), "new_scope")
 }
 
+func TestShadowConfigParses(t *testing.T) {
+	f := writeTempFile(t, `
+cluster_name: prod
+upgrade:
+  slot_name: slot_upgrade
+  publication_name: pub_upgrade
+  new_pg_bindir: /usr/lib/postgresql/17/bin
+  shadow_patroni_url: http://shadow-leader:8008
+  shadow_source_host: prod-primary
+  shadow_source_port: 5432
+  physical_slot_name: shadow_phys
+  shadow_node_count: 3
+pg:
+  superuser_dsn: "host=primary port=5432 dbname=postgres user=postgres"
+`)
+	cfg, err := config.Load(f)
+	require.NoError(t, err)
+	assert.Equal(t, "http://shadow-leader:8008", cfg.Upgrade.ShadowPatroniURL)
+	assert.Equal(t, "prod-primary", cfg.Upgrade.ShadowSourceHost)
+	assert.Equal(t, 5432, cfg.Upgrade.ShadowSourcePort)
+	assert.Equal(t, "shadow_phys", cfg.Upgrade.PhysicalSlotName)
+	assert.Equal(t, 3, cfg.Upgrade.ShadowNodeCount)
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp("", "pg-upgrade-*.yaml")

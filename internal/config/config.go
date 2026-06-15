@@ -74,6 +74,21 @@ type UpgradeConfig struct {
 	// (Patroni defaults config_dir to data_dir). There is no safe default path, so
 	// it is only patched when set.
 	NewConfigDir string `yaml:"new_config_dir"`
+
+	// --- shadow-cluster upgrade ---
+	// ShadowPatroniURL is the REST endpoint of the shadow cluster's Patroni
+	// (the cluster that becomes the new PG17 cluster).
+	ShadowPatroniURL string `yaml:"shadow_patroni_url"`
+	// ShadowSourceHost/Port is the prod primary the shadow physically replicates
+	// from (the standby_cluster source).
+	ShadowSourceHost string `yaml:"shadow_source_host"`
+	ShadowSourcePort int    `yaml:"shadow_source_port"`
+	// PhysicalSlotName is the physical replication slot created on prod for the
+	// shadow's stream (separate from the logical SlotName).
+	PhysicalSlotName string `yaml:"physical_slot_name"`
+	// ShadowNodeCount is the expected node count of the shadow cluster; provision
+	// waits until that many members are healthy.
+	ShadowNodeCount int `yaml:"shadow_node_count"`
 }
 
 type PGConfig struct {
