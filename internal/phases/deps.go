@@ -9,6 +9,7 @@ import (
 	pg "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
 	"github.com/dmbabuev/pg-upgrade/internal/clients/pgbin"
 	"github.com/dmbabuev/pg-upgrade/internal/config"
+	"github.com/dmbabuev/pg-upgrade/internal/diskguard"
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 	"github.com/dmbabuev/pg-upgrade/internal/slotdrain"
 	"github.com/dmbabuev/pg-upgrade/internal/state"
@@ -41,6 +42,16 @@ type Deps struct {
 	// Shadow returns a pg client to the shadow cluster's leader (PG13 standby
 	// during provision, PG17 after upgrade). Resolved lazily.
 	Shadow func(ctx context.Context) (pg.Client, error)
+
+	// ShadowMember builds a Patroni client for a specific shadow member by its
+	// API URL (so the tool can reinit each replica). Resolved from the member
+	// host + the shadow Patroni API port.
+	ShadowMember func(apiURL string) patroni.Client
+	// DiskGuard samples the prod logical slot's WAL pressure (Plan 2). May be nil
+	// in tests/topologies that don't need throttling.
+	DiskGuard interface {
+		Sample(ctx context.Context) (diskguard.Decision, int64, error)
+	}
 
 	// WriteSignal persists the DSN-swap signal file (injected for testability).
 	WriteSignal func(path string, data []byte) error
