@@ -26,6 +26,8 @@ type Client interface {
 	Checkpoint(ctx context.Context) error
 	GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error)
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
+	CreatePhysicalSlot(ctx context.Context, name string) error
+	CurrentWALLSN(ctx context.Context) (string, error)
 	MaxSlotWALKeepSize(ctx context.Context) (string, error)
 	OldestTxnAge(ctx context.Context) (time.Duration, error)
 	SlotRetainedBytes(ctx context.Context, slot string) (int64, error)
@@ -252,6 +254,21 @@ func (c *internalClient) CreateLogicalSlot(ctx context.Context, name, plugin str
 		return nil, fmt.Errorf("slot %q not found after creation", name)
 	}
 	return slot, nil
+}
+
+// CreatePhysicalSlot creates a physical replication slot on the primary so it
+// retains WAL for the shadow's stream. Idempotent: ignores "already exists".
+func (c *internalClient) CreatePhysicalSlot(ctx context.Context, name string) error {
+	_, err := c.q.Exec(ctx,
+		`SELECT pg_create_physical_replication_slot($1)
+		   WHERE NOT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)`, name)
+	return err
+}
+
+func (c *internalClient) CurrentWALLSN(ctx context.Context) (string, error) {
+	var lsn string
+	err := c.q.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&lsn)
+	return lsn, err
 }
 
 // MaxSlotWALKeepSize returns the max_slot_wal_keep_size setting as a raw string
@@ -550,6 +567,12 @@ func (p *PoolClient) GetReplicationSlot(ctx context.Context, name string) (*Repl
 }
 func (p *PoolClient) CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error) {
 	return p.ic().CreateLogicalSlot(ctx, name, plugin)
+}
+func (p *PoolClient) CreatePhysicalSlot(ctx context.Context, name string) error {
+	return p.ic().CreatePhysicalSlot(ctx, name)
+}
+func (p *PoolClient) CurrentWALLSN(ctx context.Context) (string, error) {
+	return p.ic().CurrentWALLSN(ctx)
 }
 func (p *PoolClient) MaxSlotWALKeepSize(ctx context.Context) (string, error) {
 	return p.ic().MaxSlotWALKeepSize(ctx)

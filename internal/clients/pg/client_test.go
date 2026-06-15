@@ -391,3 +391,27 @@ func TestBypassDDLConfigSetsRuntimeParam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "on", cfg.ConnConfig.RuntimeParams["pg_upgrade.allow_ddl"])
 }
+
+func TestCreatePhysicalSlot(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectExec("pg_create_physical_replication_slot").
+		WithArgs("shadow_phys").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	c := pgclient.NewFromPool(mock)
+	require.NoError(t, c.CreatePhysicalSlot(context.Background(), "shadow_phys"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCurrentWALLSN(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectQuery("pg_current_wal_lsn").
+		WillReturnRows(pgxmock.NewRows([]string{"lsn"}).AddRow("0/3FA20000"))
+	c := pgclient.NewFromPool(mock)
+	lsn, err := c.CurrentWALLSN(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "0/3FA20000", lsn)
+}

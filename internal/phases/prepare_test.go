@@ -64,7 +64,15 @@ type fakePG struct {
 	oldestTxnAge    time.Duration
 	ddlLocked       bool
 	ddlUnlocked     bool
+	physicalSlot    string
+	walCurrent      string
 }
+
+func (f *fakePG) CreatePhysicalSlot(_ context.Context, name string) error {
+	f.physicalSlot = name
+	return nil
+}
+func (f *fakePG) CurrentWALLSN(context.Context) (string, error) { return f.walCurrent, nil }
 
 func (f *fakePG) LockDDL(context.Context) error   { f.ddlLocked = true; return nil }
 func (f *fakePG) UnlockDDL(context.Context) error { f.ddlUnlocked = true; return nil }
