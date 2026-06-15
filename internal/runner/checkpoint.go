@@ -33,13 +33,15 @@ func InteractiveCheckpoint(in io.Reader, out io.Writer, prompts PhasePrompts) Ch
 // DefaultPrompts are the checkpoint questions from the design spec.
 func DefaultPrompts() PhasePrompts {
 	return PhasePrompts{
-		"prepare":    "Logical slot created. Proceed to isolate N1?",
-		"isolate":    "N1 isolated, target_lsn recorded. Run slot drain?",
-		"drain":      "Slot drained. Proceed to pg_upgrade (point of no return)?",
-		"upgrade":    "pg_upgrade complete. Proceed to catchup (start of Phase 5)?",
-		"catchup":    "New cluster healthy, subscription at zero lag. Begin switchover (write freeze)?",
-		"switchover": "DSN swapped, rollback window open. Proceed to Finalize (Plan 4 — no rollback after this)?",
-		"finalize":   "Rollback artifacts dropped, cluster renamed. Proceed to cleanup (decommission old cluster)?",
-		"cleanup":    "Cleanup complete.",
+		"provision":        "Shadow cluster is now a standby of prod and caught up (full node set). Proceed to prepare?",
+		"prepare":          "Logical slot created. Proceed to isolate N1?",
+		"isolate":          "N1 isolated, target_lsn recorded. Run slot drain?",
+		"drain":            "Slot drained. Proceed to pg_upgrade (point of no return)?",
+		"upgrade":          "pg_upgrade complete. Proceed to catchup (start of Phase 5)?",
+		"catchup":          "New cluster healthy, subscription at zero lag. Begin switchover (write freeze)?",
+		"rebuild-replicas": "Shadow replicas rebuilt to PG17 (cluster in HA). Begin switchover (cutover / write freeze)?",
+		"switchover":       "DSN swapped, rollback window open. Proceed to Finalize (Plan 4 — no rollback after this)?",
+		"finalize":         "Rollback artifacts dropped, cluster renamed. Proceed to cleanup (decommission old cluster)?",
+		"cleanup":          "Cleanup complete.",
 	}
 }
