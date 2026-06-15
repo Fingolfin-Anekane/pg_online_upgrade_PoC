@@ -171,6 +171,45 @@ func TestPause_NoAuthHeaderWhenUnconfigured(t *testing.T) {
 	assert.False(t, hadAuth, "no Authorization header expected when creds are unset")
 }
 
+func TestSetStandbyCluster(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/config", r.URL.Path)
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := patroni.NewHTTPClient(srv.URL)
+	require.NoError(t, c.SetStandbyCluster(context.Background(), "prod-primary", 5432, "shadow_phys"))
+
+	sc, ok := gotBody["standby_cluster"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "prod-primary", sc["host"])
+	assert.Equal(t, float64(5432), sc["port"])
+	assert.Equal(t, "shadow_phys", sc["primary_slot_name"])
+}
+
+func TestClearStandbyCluster(t *testing.T) {
+	var gotBody map[string]any
+	var hasKey bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/config", r.URL.Path)
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, hasKey = gotBody["standby_cluster"]
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := patroni.NewHTTPClient(srv.URL)
+	require.NoError(t, c.ClearStandbyCluster(context.Background()))
+
+	require.True(t, hasKey, "standby_cluster key must be present so Patroni clears it")
+	assert.Nil(t, gotBody["standby_cluster"])
+}
+
 func TestGetCluster_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

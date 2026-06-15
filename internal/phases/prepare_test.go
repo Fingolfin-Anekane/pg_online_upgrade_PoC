@@ -111,6 +111,9 @@ func (f *fakePatroni) NodePaused(context.Context) (bool, error) { return f.nodeP
 func (f *fakePatroni) Pause(context.Context) error              { f.paused = true; return nil }
 func (f *fakePatroni) Resume(context.Context) error             { f.paused = false; return nil }
 
+func (f *fakePatroni) SetStandbyCluster(context.Context, string, int, string) error { return nil }
+func (f *fakePatroni) ClearStandbyCluster(context.Context) error                    { return nil }
+
 func testMgr(t *testing.T) *state.Manager {
 	t.Helper()
 	// NewManager starts Current at "prepare"; isolate/drain/upgrade tests call

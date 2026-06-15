@@ -14,6 +14,8 @@ type Client interface {
 	NodePaused(ctx context.Context) (bool, error)
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
+	SetStandbyCluster(ctx context.Context, host string, port int, slotName string) error
+	ClearStandbyCluster(ctx context.Context) error
 }
 
 type ClusterInfo struct {
@@ -167,6 +169,26 @@ func (c *HTTPClient) Pause(ctx context.Context) error {
 // Resume lifts maintenance mode by clearing the pause flag in the dynamic config.
 func (c *HTTPClient) Resume(ctx context.Context) error {
 	return c.patchConfig(ctx, map[string]any{"pause": false})
+}
+
+// SetStandbyCluster makes this cluster a Patroni standby cluster following the
+// remote primary at host:port through primary_slot_name. Patroni reinitializes
+// the nodes from the remote primary.
+func (c *HTTPClient) SetStandbyCluster(ctx context.Context, host string, port int, slotName string) error {
+	return c.patchConfig(ctx, map[string]any{
+		"standby_cluster": map[string]any{
+			"host":                   host,
+			"port":                   port,
+			"primary_slot_name":      slotName,
+			"create_replica_methods": []string{"basebackup"},
+		},
+	})
+}
+
+// ClearStandbyCluster removes the standby_cluster block, which makes Patroni
+// promote the standby leader to a standalone primary.
+func (c *HTTPClient) ClearStandbyCluster(ctx context.Context) error {
+	return c.patchConfig(ctx, map[string]any{"standby_cluster": nil})
 }
 
 // patchConfig deep-merges patch into Patroni's dynamic configuration. PATCH is
