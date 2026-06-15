@@ -257,3 +257,15 @@ func TestCreateForwardSubscriptionRejectsInvalidatedSlot(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalidated")
 	assert.Equal(t, "", pg17.createdSub) // never attached
 }
+
+func TestCatchupShadowTransitionsToRebuildReplicas(t *testing.T) {
+	tr := NewCatchupShadow(Deps{}).Transitions()
+	require.Len(t, tr, 1)
+	assert.Equal(t, "rebuild-replicas", tr[0].To)
+}
+
+func TestCatchupInplaceStillTransitionsToSwitchover(t *testing.T) {
+	tr := NewCatchup(Deps{}).Transitions()
+	require.Len(t, tr, 1)
+	assert.Equal(t, "switchover", tr[0].To)
+}

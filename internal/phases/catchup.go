@@ -11,24 +11,33 @@ import (
 	"github.com/dmbabuev/pg-upgrade/internal/runner"
 )
 
+// catchupSteps is the shared step list for the catchup phase, used by both the
+// in-place (NewCatchup) and shadow (NewCatchupShadow) variants — they differ
+// only in where they hand off, not in what they do.
+func catchupSteps(d Deps) []runner.Step {
+	return []runner.Step{
+		&verifyOldClusterStopped{d},
+		&patchNewPatroniConfig{d},
+		&startPG17{d},
+		&createForwardSubscription{d},
+		&ensureDDLLockOnNew{d},
+		&waitLagZero{d},
+		&verifyNewClusterHealthy{d},
+	}
+}
+
 // NewCatchup builds Phase 5. The binary brings up PG17 under Patroni on N1 (so
 // the new cluster is Patroni-managed, not bare pg_ctl); adding the replicas
 // N2/N3 stays operator-driven, and the binary verifies the formed cluster in
 // VerifyNewClusterHealthy.
 func NewCatchup(d Deps) runner.Phase {
-	return &simplePhase{
-		id: "catchup",
-		steps: []runner.Step{
-			&verifyOldClusterStopped{d},
-			&patchNewPatroniConfig{d},
-			&startPG17{d},
-			&createForwardSubscription{d},
-			&ensureDDLLockOnNew{d},
-			&waitLagZero{d},
-			&verifyNewClusterHealthy{d},
-		},
-		trans: []runner.Transition{{To: "switchover"}},
-	}
+	return &simplePhase{id: "catchup", steps: catchupSteps(d), trans: []runner.Transition{{To: "switchover"}}}
+}
+
+// NewCatchupShadow is catchup for the shadow topology: same steps, but it hands
+// off to rebuild-replicas (replicas are rebuilt before cutover).
+func NewCatchupShadow(d Deps) runner.Phase {
+	return &simplePhase{id: "catchup", steps: catchupSteps(d), trans: []runner.Transition{{To: "rebuild-replicas"}}}
 }
 
 // --- VerifyOldClusterStopped: refuse to bring up PG17 while the old server lives ---
