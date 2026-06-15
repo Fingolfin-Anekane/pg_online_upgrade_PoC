@@ -22,6 +22,7 @@ func NewFinalize(d Deps) runner.Phase {
 	return &simplePhase{
 		id: "finalize",
 		steps: []runner.Step{
+			&unlockDDL{d},
 			&dropReverseReplication{d},
 			&dropForwardSubscription{d},
 			&verifyRenamedCluster{d},
@@ -100,8 +101,28 @@ func (s *verifyRenamedCluster) Run(ctx context.Context) error {
 	return nil
 }
 
+// --- UnlockDDL: release the DDL safeguard on the new (now-production) cluster ---
+
+type unlockDDL struct{ d Deps }
+
+func (s *unlockDDL) ID() runner.StepID                   { return "UnlockDDL" }
+func (s *unlockDDL) Check(context.Context) (bool, error) { return false, nil }
+func (s *unlockDDL) Run(ctx context.Context) error {
+	s.d.logf("снимаю DDL-замок на новом кластере (миграции снова разрешены)...")
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return err
+	}
+	if err := pg17.UnlockDDL(ctx); err != nil {
+		return err
+	}
+	s.d.logf("DDL-замок снят")
+	return nil
+}
+
 var (
 	_ runner.Step = (*dropReverseReplication)(nil)
 	_ runner.Step = (*dropForwardSubscription)(nil)
 	_ runner.Step = (*verifyRenamedCluster)(nil)
+	_ runner.Step = (*unlockDDL)(nil)
 )

@@ -50,7 +50,7 @@ func TestFinalizeDropsRollbackArtifactsAndKeepsFreeze(t *testing.T) {
 
 	ph := NewFinalize(d)
 	assert.Equal(t, "finalize", ph.ID())
-	require.Len(t, ph.Steps(), 3) // no UnfreezeOldPrimary step
+	require.Len(t, ph.Steps(), 4) // +UnlockDDL; no UnfreezeOldPrimary step
 	for _, s := range ph.Steps() {
 		done, err := s.Check(context.Background())
 		require.NoError(t, err)
@@ -63,6 +63,13 @@ func TestFinalizeDropsRollbackArtifactsAndKeepsFreeze(t *testing.T) {
 	assert.Contains(t, pg17.droppedSub, "sub_up")       // forward sub on PG17
 	// The old primary stays frozen (no split-brain): finalize must NOT unfreeze it.
 	assert.Empty(t, oldPrimary.unfrozen, "finalize must leave the old primary frozen")
+}
+
+func TestFinalizeUnlocksDDLOnNew(t *testing.T) {
+	pg17 := &fakePG{}
+	d := Deps{PG17: func(context.Context) (pg.Client, error) { return pg17, nil }}
+	require.NoError(t, (&unlockDDL{d}).Run(context.Background()))
+	assert.True(t, pg17.ddlUnlocked)
 }
 
 func TestFinalizeTransitionsToCleanup(t *testing.T) {

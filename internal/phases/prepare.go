@@ -20,6 +20,7 @@ func NewPrepare(d Deps) runner.Phase {
 			&createPublication{d},
 			&createLogicalSlot{d},
 			&recordSlotBaseline{d},
+			&lockDDL{d},
 		},
 		trans: []runner.Transition{{To: "isolate"}},
 	}
@@ -202,6 +203,25 @@ func (s *recordSlotBaseline) Run(ctx context.Context) error {
 	})
 }
 
+// --- LockDDL: install the DDL safeguard on the old primary (last prepare step) ---
+
+type lockDDL struct{ d Deps }
+
+func (s *lockDDL) ID() runner.StepID                   { return "LockDDL" }
+func (s *lockDDL) Check(context.Context) (bool, error) { return false, nil } // idempotent re-assert
+func (s *lockDDL) Run(ctx context.Context) error {
+	s.d.logf("ставлю DDL-замок на старом primary (запрет схемных изменений на время апгрейда)...")
+	primary, err := s.d.Primary(ctx)
+	if err != nil {
+		return err
+	}
+	if err := primary.LockDDL(ctx); err != nil {
+		return err
+	}
+	s.d.logf("DDL-замок установлен (наши собственные DDL проходят через pg_upgrade.allow_ddl)")
+	return nil
+}
+
 // (interface assertions)
 var (
 	_ runner.Step = (*discoverTopology)(nil)
@@ -209,4 +229,5 @@ var (
 	_ runner.Step = (*createPublication)(nil)
 	_ runner.Step = (*createLogicalSlot)(nil)
 	_ runner.Step = (*recordSlotBaseline)(nil)
+	_ runner.Step = (*lockDDL)(nil)
 )

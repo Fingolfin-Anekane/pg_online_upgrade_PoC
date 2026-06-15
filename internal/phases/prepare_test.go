@@ -62,7 +62,12 @@ type fakePG struct {
 	inRecoveryErr   error
 	maxSlotWALKeep  string
 	oldestTxnAge    time.Duration
+	ddlLocked       bool
+	ddlUnlocked     bool
 }
+
+func (f *fakePG) LockDDL(context.Context) error   { f.ddlLocked = true; return nil }
+func (f *fakePG) UnlockDDL(context.Context) error { f.ddlUnlocked = true; return nil }
 
 func (f *fakePG) MaxSlotWALKeepSize(context.Context) (string, error)  { return f.maxSlotWALKeep, nil }
 func (f *fakePG) OldestTxnAge(context.Context) (time.Duration, error) { return f.oldestTxnAge, nil }
@@ -144,6 +149,14 @@ func TestPrepareDiscoverAndCreate(t *testing.T) {
 	assert.Equal(t, "slot_up", primary.createdSlot)
 	require.NotNil(t, mgr.Get().Artifacts.SlotBaseline)
 	assert.Equal(t, "0/10", mgr.Get().Artifacts.SlotBaseline.ConfirmedFlushLSN)
+}
+
+func TestPrepareLocksDDLOnOldPrimary(t *testing.T) {
+	primary := &fakePG{}
+	d := Deps{Mgr: testMgr(t),
+		Primary: func(context.Context) (pg.Client, error) { return primary, nil }}
+	require.NoError(t, (&lockDDL{d}).Run(context.Background()))
+	assert.True(t, primary.ddlLocked)
 }
 
 func TestPrepareTransitionsToIsolate(t *testing.T) {

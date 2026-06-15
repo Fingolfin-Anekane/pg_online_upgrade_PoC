@@ -23,6 +23,7 @@ func NewCatchup(d Deps) runner.Phase {
 			&patchNewPatroniConfig{d},
 			&startPG17{d},
 			&createForwardSubscription{d},
+			&ensureDDLLockOnNew{d},
 			&waitLagZero{d},
 			&verifyNewClusterHealthy{d},
 		},
@@ -352,11 +353,34 @@ func (s *verifyNewClusterHealthy) Run(ctx context.Context) error {
 	return nil
 }
 
+// --- EnsureDDLLockOnNew: re-assert the DDL lock on the PG17 leader ---
+//
+// The lock installed on the old primary is inherited by the new cluster via
+// physical replication + pg_upgrade, but re-assert it idempotently so the
+// safeguard does not depend solely on inheritance.
+type ensureDDLLockOnNew struct{ d Deps }
+
+func (s *ensureDDLLockOnNew) ID() runner.StepID                   { return "EnsureDDLLockOnNew" }
+func (s *ensureDDLLockOnNew) Check(context.Context) (bool, error) { return false, nil }
+func (s *ensureDDLLockOnNew) Run(ctx context.Context) error {
+	s.d.logf("подтверждаю DDL-замок на PG17 (идемпотентно)...")
+	pg17, err := s.d.PG17(ctx)
+	if err != nil {
+		return err
+	}
+	if err := pg17.LockDDL(ctx); err != nil {
+		return err
+	}
+	s.d.logf("DDL-замок на PG17 подтверждён")
+	return nil
+}
+
 var (
 	_ runner.Step = (*verifyOldClusterStopped)(nil)
 	_ runner.Step = (*patchNewPatroniConfig)(nil)
 	_ runner.Step = (*startPG17)(nil)
 	_ runner.Step = (*createForwardSubscription)(nil)
+	_ runner.Step = (*ensureDDLLockOnNew)(nil)
 	_ runner.Step = (*waitLagZero)(nil)
 	_ runner.Step = (*verifyNewClusterHealthy)(nil)
 )
