@@ -6,6 +6,7 @@ import (
 	"time"
 
 	pgclient "github.com/dmbabuev/pg-upgrade/internal/clients/pg"
+	"github.com/jackc/pgx/v5"
 	pgxmock "github.com/pashagolub/pgxmock/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -353,6 +354,36 @@ func TestUnlockDDL(t *testing.T) {
 	c := pgclient.NewFromPool(mock)
 	require.NoError(t, c.UnlockDDL(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSlotRetainedBytes(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery("pg_wal_lsn_diff").
+		WithArgs("slot_upgrade").
+		WillReturnRows(pgxmock.NewRows([]string{"retained"}).AddRow(int64(1048576)))
+
+	c := pgclient.NewFromPool(mock)
+	n, err := c.SlotRetainedBytes(context.Background(), "slot_upgrade")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1048576), n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSlotRetainedBytesMissingSlot(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery("pg_wal_lsn_diff").
+		WithArgs("slot_upgrade").
+		WillReturnError(pgx.ErrNoRows)
+
+	c := pgclient.NewFromPool(mock)
+	_, err = c.SlotRetainedBytes(context.Background(), "slot_upgrade")
+	require.Error(t, err)
 }
 
 func TestBypassDDLConfigSetsRuntimeParam(t *testing.T) {

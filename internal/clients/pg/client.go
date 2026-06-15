@@ -28,6 +28,7 @@ type Client interface {
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
 	MaxSlotWALKeepSize(ctx context.Context) (string, error)
 	OldestTxnAge(ctx context.Context) (time.Duration, error)
+	SlotRetainedBytes(ctx context.Context, slot string) (int64, error)
 	LockDDL(ctx context.Context) error
 	UnlockDDL(ctx context.Context) error
 	CreatePublication(ctx context.Context, name string) error
@@ -277,6 +278,20 @@ func (c *internalClient) OldestTxnAge(ctx context.Context) (time.Duration, error
 		return 0, fmt.Errorf("pg: read oldest transaction age: %w", err)
 	}
 	return time.Duration(secs * float64(time.Second)), nil
+}
+
+// SlotRetainedBytes returns how many bytes of WAL the named slot is keeping the
+// primary from recycling: pg_current_wal_lsn() - restart_lsn. This is the slot's
+// disk pressure; compared against max_slot_wal_keep_size it drives the throttle.
+func (c *internalClient) SlotRetainedBytes(ctx context.Context, slot string) (int64, error) {
+	var n int64
+	err := c.q.QueryRow(ctx,
+		`SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint
+		   FROM pg_replication_slots WHERE slot_name = $1`, slot).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("pg: slot retained bytes for %q: %w", slot, err)
+	}
+	return n, nil
 }
 
 func (c *internalClient) CreatePublication(ctx context.Context, name string) error {
@@ -541,6 +556,9 @@ func (p *PoolClient) MaxSlotWALKeepSize(ctx context.Context) (string, error) {
 }
 func (p *PoolClient) OldestTxnAge(ctx context.Context) (time.Duration, error) {
 	return p.ic().OldestTxnAge(ctx)
+}
+func (p *PoolClient) SlotRetainedBytes(ctx context.Context, slot string) (int64, error) {
+	return p.ic().SlotRetainedBytes(ctx, slot)
 }
 func (p *PoolClient) LockDDL(ctx context.Context) error   { return p.ic().LockDDL(ctx) }
 func (p *PoolClient) UnlockDDL(ctx context.Context) error { return p.ic().UnlockDDL(ctx) }
