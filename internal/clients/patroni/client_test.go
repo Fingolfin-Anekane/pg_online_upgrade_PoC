@@ -220,3 +220,17 @@ func TestGetCluster_ServerError(t *testing.T) {
 	_, err := c.GetCluster(context.Background())
 	assert.ErrorContains(t, err, "500")
 }
+
+func TestReinitialize(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/reinitialize", r.URL.Path)
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := patroni.NewHTTPClient(srv.URL)
+	require.NoError(t, c.Reinitialize(context.Background()))
+	assert.True(t, hit)
+}

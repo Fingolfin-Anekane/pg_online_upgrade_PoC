@@ -134,6 +134,7 @@ func (f *fakePatroni) ClearStandbyCluster(context.Context) error {
 	f.standbySet = false
 	return nil
 }
+func (f *fakePatroni) Reinitialize(context.Context) error { return nil }
 
 func testMgr(t *testing.T) *state.Manager {
 	t.Helper()

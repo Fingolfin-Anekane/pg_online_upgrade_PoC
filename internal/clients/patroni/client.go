@@ -16,6 +16,7 @@ type Client interface {
 	Resume(ctx context.Context) error
 	SetStandbyCluster(ctx context.Context, host string, port int, slotName string) error
 	ClearStandbyCluster(ctx context.Context) error
+	Reinitialize(ctx context.Context) error
 }
 
 type ClusterInfo struct {
@@ -189,6 +190,28 @@ func (c *HTTPClient) SetStandbyCluster(ctx context.Context, host string, port in
 // promote the standby leader to a standalone primary.
 func (c *HTTPClient) ClearStandbyCluster(ctx context.Context) error {
 	return c.patchConfig(ctx, map[string]any{"standby_cluster": nil})
+}
+
+// Reinitialize triggers `reinit` on the member this client points at: Patroni
+// rebuilds its data dir from the current leader (basebackup). POST /reinitialize
+// with {"force": true} so it proceeds even if the member looks healthy.
+func (c *HTTPClient) Reinitialize(ctx context.Context) error {
+	body, _ := json.Marshal(map[string]any{"force": true})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/reinitialize", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("patroni POST /reinitialize: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("patroni POST /reinitialize: HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // patchConfig deep-merges patch into Patroni's dynamic configuration. PATCH is
