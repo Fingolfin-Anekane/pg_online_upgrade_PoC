@@ -99,8 +99,28 @@ func NewFromPool(q poolQuerier) *internalClient {
 	return &internalClient{q: q}
 }
 
+// BypassDDLConfig parses dsn and marks the connection so it is exempt from the
+// DDL lock (see internalClient.LockDDL): every connection started from this
+// config sends pg_upgrade.allow_ddl=on in its startup packet, so the event
+// trigger lets the tool's own DDL through.
+func BypassDDLConfig(dsn string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("pg parse dsn: %w", err)
+	}
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["pg_upgrade.allow_ddl"] = "on"
+	return cfg, nil
+}
+
 func NewFromDSN(ctx context.Context, dsn string) (*PoolClient, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := BypassDDLConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pg connect: %w", err)
 	}

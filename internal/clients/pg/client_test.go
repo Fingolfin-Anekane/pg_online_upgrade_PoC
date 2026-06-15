@@ -354,3 +354,9 @@ func TestUnlockDDL(t *testing.T) {
 	require.NoError(t, c.UnlockDDL(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestBypassDDLConfigSetsRuntimeParam(t *testing.T) {
+	cfg, err := pgclient.BypassDDLConfig("postgres://u:p@h:5432/db")
+	require.NoError(t, err)
+	assert.Equal(t, "on", cfg.ConnConfig.RuntimeParams["pg_upgrade.allow_ddl"])
+}
