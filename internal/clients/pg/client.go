@@ -27,6 +27,7 @@ type Client interface {
 	GetReplicationSlot(ctx context.Context, name string) (*ReplicationSlot, error)
 	CreateLogicalSlot(ctx context.Context, name, plugin string) (*ReplicationSlot, error)
 	CreatePhysicalSlot(ctx context.Context, name string) error
+	DropReplicationSlot(ctx context.Context, name string) error
 	CurrentWALLSN(ctx context.Context) (string, error)
 	MaxSlotWALKeepSize(ctx context.Context) (string, error)
 	OldestTxnAge(ctx context.Context) (time.Duration, error)
@@ -262,6 +263,15 @@ func (c *internalClient) CreatePhysicalSlot(ctx context.Context, name string) er
 	_, err := c.q.Exec(ctx,
 		`SELECT pg_create_physical_replication_slot($1)
 		   WHERE NOT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)`, name)
+	return err
+}
+
+// DropReplicationSlot removes a slot (physical or logical) by name. Idempotent:
+// only drops when present, so re-entry doesn't error on an already-dropped slot.
+func (c *internalClient) DropReplicationSlot(ctx context.Context, name string) error {
+	_, err := c.q.Exec(ctx,
+		`SELECT pg_drop_replication_slot($1)
+		   WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)`, name)
 	return err
 }
 
@@ -570,6 +580,9 @@ func (p *PoolClient) CreateLogicalSlot(ctx context.Context, name, plugin string)
 }
 func (p *PoolClient) CreatePhysicalSlot(ctx context.Context, name string) error {
 	return p.ic().CreatePhysicalSlot(ctx, name)
+}
+func (p *PoolClient) DropReplicationSlot(ctx context.Context, name string) error {
+	return p.ic().DropReplicationSlot(ctx, name)
 }
 func (p *PoolClient) CurrentWALLSN(ctx context.Context) (string, error) {
 	return p.ic().CurrentWALLSN(ctx)

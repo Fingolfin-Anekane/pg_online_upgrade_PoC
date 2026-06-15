@@ -415,3 +415,15 @@ func TestCurrentWALLSN(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "0/3FA20000", lsn)
 }
+
+func TestDropReplicationSlot(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.ExpectExec("pg_drop_replication_slot").
+		WithArgs("shadow_phys").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	c := pgclient.NewFromPool(mock)
+	require.NoError(t, c.DropReplicationSlot(context.Background(), "shadow_phys"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
