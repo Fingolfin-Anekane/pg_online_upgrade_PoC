@@ -17,5 +17,24 @@ func Phases1to8(d Deps) []runner.Phase {
 	}
 }
 
+// PhasesShadow assembles the shadow-cluster topology (spec
+// 2026-06-15-shadow-cluster-upgrade-design.md). It reuses prepare/drain/upgrade/
+// switchover/finalize/cleanup, swaps in the shadow isolate, and adds provision
+// and rebuild-replicas.
+func PhasesShadow(d Deps) []runner.Phase {
+	return []runner.Phase{
+		NewProvision(d),
+		NewPrepare(d),
+		NewIsolateShadow(d),
+		NewDrain(d),
+		NewUpgrade(d),
+		NewCatchupShadow(d),
+		NewRebuildReplicas(d),
+		NewSwitchover(d),
+		NewFinalize(d),
+		NewCleanup(d),
+	}
+}
+
 // FirstPhase is the entry-point phase id for a fresh run.
 const FirstPhase = "prepare"

@@ -19,6 +19,18 @@ func TestPhases1to8Registry(t *testing.T) {
 	assert.Equal(t, []string{"prepare", "isolate", "drain", "upgrade", "catchup", "switchover", "finalize", "cleanup"}, ids)
 }
 
+func TestPhasesShadowSequence(t *testing.T) {
+	ps := PhasesShadow(Deps{})
+	var ids []string
+	for _, p := range ps {
+		ids = append(ids, string(p.ID()))
+	}
+	require.Equal(t, []string{
+		"provision", "prepare", "isolate", "drain", "upgrade",
+		"catchup", "rebuild-replicas", "switchover", "finalize", "cleanup",
+	}, ids)
+}
+
 func TestFirstPhaseMatchesManagerDefault(t *testing.T) {
 	m, err := state.NewManager(filepath.Join(t.TempDir(), "s.json"), "test")
 	require.NoError(t, err)
