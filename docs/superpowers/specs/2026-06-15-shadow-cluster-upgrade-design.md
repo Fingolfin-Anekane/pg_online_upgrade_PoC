@@ -48,14 +48,14 @@ Two slots live on the production primary:
 | Phase | Action |
 |---|---|
 | **provision** *(new)* | Tool applies `standby_cluster` config to the existing shadow cluster (source = prod primary, `primary_slot_name` = physical slot) and creates the physical slot on prod. Patroni reinitializes the shadow nodes from prod. Gate: lag≈0 and full node set healthy. |
-| **prepare** | On prod: ensure `wal_level=logical`, create publication + logical slot, record slot baseline. (Same as today.) Plus verify the shadow is caught up. |
+| **prepare** | On prod: ensure `wal_level=logical`, create publication + logical slot, record slot baseline. **Lock DDL on prod** (event trigger; last step, after pub+slot). (Otherwise same as today.) Plus verify the shadow is caught up. |
 | **isolate** | On the **shadow leader**: remove `standby_cluster` → Patroni promotes it to a standalone PG13 primary; settle replay and capture `target_lsn` (the freeze point, in prod's LSN space); drop the physical slot on prod. **Production is not touched** — no prod-Patroni pause, no `primary_conninfo` races. |
 | **drain** | Advance the prod logical slot's `confirmed_flush_lsn` to `target_lsn` (same drain machinery; LSNs align). Releases retained WAL up to `target_lsn`. |
 | **upgrade** | `pg_upgrade --link` the **shadow leader only** → PG17 (frozen at `target_lsn`). |
-| **catchup** | Bring up the PG17 shadow leader under Patroni; create the forward logical subscription prod→leader; wait until tail lag≈0. **No replicas here.** |
+| **catchup** | Bring up the PG17 shadow leader under Patroni; create the forward logical subscription prod→leader; wait until tail lag≈0. **Ensure the DDL lock is present on the new leader** (idempotent; inherited via physical repl + pg_upgrade, re-installed if missing). **No replicas here.** |
 | **rebuild-replicas** *(new)* | For each shadow replica: switch its Patroni `bin_dir` to PG17 and `patronictl reinit` (pg_basebackup from the PG17 leader); wait until streaming and caught up → **full HA on the shadow**. The leader keeps applying the ongoing tail throughout (logical slot stays alive). Disk-safety throttle applies (below). |
 | **switchover** | Freeze prod writes, drain the final lag, sync sequences, DSN swap → traffic to the PG17 shadow, verify traffic, disable the forward subscription. (Same as today.) |
-| **finalize / cleanup** | Drop the logical slot + publication on prod, drop any leftover slots, decommission the prod cluster after the rollback window. Prod is **not** unfrozen (split-brain protection). |
+| **finalize / cleanup** | **Release the DDL lock on the new (now-production) cluster** so the app can run migrations again. Drop the logical slot + publication on prod, drop any leftover slots, decommission the prod cluster after the rollback window. Prod is **not** unfrozen (split-brain protection); its DDL lock is dropped as part of teardown. |
 
 ### isolate — freeze + `target_lsn` capture (open mechanism)
 
@@ -83,6 +83,34 @@ The failure to prevent: the logical slot's `restart_lsn` lags, pg_wal grows on t
 
 **5. Preflight.** The existing `prepare` preflight already warns on `max_slot_wal_keep_size` and long-running transactions (which pin `restart_lsn`/`catalog_xmin`). Keep it.
 
+## DDL lockdown (accident prevention)
+
+Logical replication does **not** carry DDL. A schema change on the old primary after the freeze (`target_lsn`) diverges the new cluster's schema from the incoming row stream → apply breaks or data corrupts. Same hazard on the new cluster if DDL hits it before the migration finishes. So DDL is locked on both clusters for the window, to stop an accidentally-run migration from breaking the upgrade.
+
+**Mechanism — event trigger with a session-GUC bypass:**
+
+```sql
+CREATE OR REPLACE FUNCTION pg_upgrade_block_ddl() RETURNS event_trigger AS $$
+BEGIN
+  IF current_setting('pg_upgrade.allow_ddl', true) IS DISTINCT FROM 'on' THEN
+    RAISE EXCEPTION 'DDL is locked during the online upgrade (command %)', tg_tag
+      USING HINT = 'pg-upgrade safeguard: an app migration must not run now.';
+  END IF;
+END $$ LANGUAGE plpgsql;
+CREATE EVENT TRIGGER pg_upgrade_ddl_lock ON ddl_command_start
+  EXECUTE FUNCTION pg_upgrade_block_ddl();
+```
+
+The tool sets `SET pg_upgrade.allow_ddl = on` in its own admin sessions, so its legitimate DDL is not blocked — the freeze triggers (`CREATE TRIGGER` in switchover), `CREATE/ALTER/DROP SUBSCRIPTION`, `DROP PUBLICATION`, and the lock/unlock itself. Accidental app DDL (no GUC) is rejected with a clear error.
+
+**Lifecycle:**
+- `prepare` installs the lock on the **old primary** (last step, after the publication + slot exist, so those creates aren't blocked). It propagates to the shadow via physical replication and **survives `pg_upgrade`**, so the new cluster inherits it before any user access; `catchup` re-asserts it idempotently so the safeguard doesn't depend solely on inheritance.
+- `finalize` releases it on the **new (now-production) cluster** (`DROP EVENT TRIGGER`) so the app can migrate normally. The old cluster stays DML-frozen and is decommissioned; its lock drops at teardown.
+
+**Honest limitation:** this stops *accidents*, not intent — anyone who can `SET pg_upgrade.allow_ddl=on` or `DROP EVENT TRIGGER` overrides it. That matches the goal (don't let an accidentally-run migration break things), and mirrors the existing DML-freeze posture (also a safeguard, not a security boundary).
+
+**Note on what is/isn't DDL here:** sequence sync in switchover uses `setval()` (a function call, DML) — not blocked. The forward-subscription apply worker applies row changes (DML) — not blocked. Only schema-changing statements trip the trigger.
+
 ## Division of labor
 
 Same philosophy as the current tool: orchestrate + verify; delegate heavy infra to Patroni/the platform.
@@ -98,6 +126,7 @@ Same philosophy as the current tool: orchestrate + verify; delegate heavy infra 
 - **`catchup` (changed):** tail only (no replicas).
 - **`rebuild-replicas` phase (new):** per-replica `bin_dir`→PG17 + `patronictl reinit` + wait, with the disk-safety throttle.
 - **disk-safety monitor:** slot-lag + free-disk watcher used by the long-pole phases.
+- **DDL lock:** `LockDDL`/`UnlockDDL` client methods (install/drop the `pg_upgrade_ddl_lock` event trigger) + the event-trigger SQL; the tool's admin connections always `SET pg_upgrade.allow_ddl = on`.
 
 ## What gets simpler vs the current approach
 
@@ -105,7 +134,7 @@ The riskiest current code disappears from the serving path. `isolate` no longer 
 
 ## Carried-over caveats (not made worse)
 
-- DDL is not carried by logical replication — no schema changes between freeze and cutover.
+- DDL is not carried by logical replication — no schema changes during the window. Now **enforced** by the DDL lock (see DDL lockdown), not just a manual caveat.
 - Sequences are synced in `switchover` (as today).
 - Rollback **after** the DSN swap loses writes made on the shadow post-cutover (standard cutover caveat). Before the swap, prod is intact.
 - Prod is **not** unfrozen after cutover (split-brain protection).
