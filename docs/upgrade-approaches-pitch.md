@@ -255,9 +255,37 @@ cutover-ready ⇔ bytes_behind = 0
 Фазы: `provision → prepare → isolate → drain → upgrade → catchup → rebuild-replicas
 → switchover → finalize → cleanup`.
 
-### B.0 · provision
+### B.0 · provision — перевод shadow в standby_cluster
 
-Боевой нетронут; shadow становится standby_cluster (физически реплицирует прод).
+**Было:** `pg-main-shadow` — самостоятельный PG13 Patroni-кластер со своим лидером,
+ещё не связан с продом:
+
+```
++ Cluster: pg-main-shadow (PG 13) — самостоятельный кластер ------+
+| pg-shadow-1 | z1 | Leader       | running   |  1 |   |
+| pg-shadow-2 | z2 | Sync Standby | streaming |  1 | 0 |
+| pg-shadow-3 | z3 | Replica      | streaming |  1 | 0 |
+```
+
+**Как переводим в standby.** Создаём на проде физический слот и **патчим
+динамический конфиг Patroni шэдоу блоком `standby_cluster`** (источник = боевой
+primary, `primary_slot_name` = физический слот). Получив этот блок, Patroni шэдоу
+переинициализирует свои ноды от прода (basebackup через физический слот), а его
+лидер перестаёт быть самостоятельным primary и становится **Standby Leader** —
+физически реплицирует боевой `pg-main`:
+
+```sql
+-- на проде: физический слот под стрим шэдоу
+SELECT pg_create_physical_replication_slot('shadow_phys');
+```
+```
+PATCH /config (Patroni шэдоу) — переводим весь кластер в standby:
+{"standby_cluster": {"host": "<pg-main-1>", "port": 5432,
+  "primary_slot_name": "shadow_phys", "create_replica_methods": ["basebackup"]}}
+```
+
+**Стало:** боевой нетронут (полный HA), shadow — standby_cluster, физически
+догоняет прод (ждём lag < 16MB и полный набор нод):
 
 ```
 + Cluster: pg-main (PG 13) --- (боевой, полный HA, не трогаем) ---
@@ -267,20 +295,8 @@ cutover-ready ⇔ bytes_behind = 0
 | pg-shadow-3 | z3 | Replica        | streaming |  3 | 0 |
 ```
 
-**Действия:**
-```sql
--- на проде: физический слот под стрим шэдоу
-SELECT pg_create_physical_replication_slot('shadow_phys');
-```
-```
-PATCH /config (Patroni шэдоу):
-{"standby_cluster": {"host": "<pg-main-1>", "port": 5432,
-  "primary_slot_name": "shadow_phys", "create_replica_methods": ["basebackup"]}}
-```
-Ждать lag < 16MB и полный набор нод.
-
 **Закладки:** нет операторских шагов (предполагаем, что сам shadow-кластер уже
-существует как пустой Patroni-кластер).
+существует как самостоятельный Patroni-кластер).
 
 ### B.1 · prepare
 
@@ -315,7 +331,7 @@ Shadow не меняется.
   репликах шэдоу** (`pg-shadow-2`, `pg-shadow-3`) — чтобы реплика не сделала
   failover при остановке лидера и не помешала удалению DCS-ключа.
 
-### B.4 · upgrade — точка невозврата (на шэдоу)
+### B.4 · upgrade (на шэдоу)
 
 ```
 ( pg-main-shadow: Patroni остановлен на всех нодах; /service/pg-main-shadow удалён;
@@ -330,7 +346,7 @@ CHECKPOINT; CHECKPOINT; pg_ctl stop -m fast -D <datadir13>
 DELETE /v2/keys/service/pg-main-shadow?recursive=true&dir=true   # ← удаление DCS-ключа (etcd v2, mTLS)
 initdb -D <datadir17> <opts>
 pg_upgrade ... --link --check
-pg_upgrade ... --link                        # ← ТОЧКА НЕВОЗВРАТА
+pg_upgrade ... --link
 ```
 
 **Закладки:**
@@ -407,9 +423,7 @@ PG17-лидера) с disk-guard throttle/abort (чтобы конкурентн
 | **Где рисковый `isolate`/freeze** | ⚠ на боевом кластере | ✅ на параллельном `pg-main-shadow` |
 | **Откат до cutover** | ⚠ реплика уже каннибализирована, восстановление дороже | ✅ тривиально: снести shadow, прод как был |
 | **Формирование HA нового кластера** | TODO: перенос 2 реплик (оператор) | фаза `rebuild-replicas` (тулза) + TODO: `bin_dir` на репликах |
-| **DCS-операции оператора** | ⚠ `etcdctl` **rename scope** + удаление старых ключей | ✅ rename не нужен (ключ-делит тулзой); только удаление старых ключей |
-| **Точки невозврата** | `pg_upgrade --link`, затем cutover | то же |
-| **Стоимость ресурсов** | не нужен параллельный кластер | ⚠ нужен полноразмерный параллельный кластер (2 полные копии БД: provision + reinit) |
+| **DCS-операции оператора** | ⚠ `etcdctl` **rename scope** + удаление старых ключей | ✅ rename не нужен (ключ-делит тулзой); только удаление старых ключей || **Стоимость ресурсов** | не нужен параллельный кластер | ⚠ нужен полноразмерный параллельный кластер (2 полные копии БД: provision + reinit) |
 | **Зависимость от ssh/доступов** | локальные операции на ноде N1 | тулза на shadow-лидере + reinit по REST |
 
 ---
