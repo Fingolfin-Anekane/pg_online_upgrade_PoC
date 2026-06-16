@@ -227,7 +227,7 @@ cutover-ready ⇔ bytes_behind = 0
 `VerifyRenamedCluster`.
 
 **Закладки:**
-- [TODO] **Rename кластера** (`etcdctl`): `pg-main-17` → `pg-main`.
+- [TODO] **Rename кластера**: `pg-main-17` → `pg-main`.
 - Старый primary **остаётся замороженным** (анти-split-brain), не размораживается.
 
 ### A.8 · cleanup
@@ -237,7 +237,7 @@ cutover-ready ⇔ bytes_behind = 0
 **Закладки:**
 - [TODO] **Остановка старого primary** (тулза на удалённой ноде
   `pg_ctl` не делает; только проверяет, что он недоступен).
-- [TODO] **Удаление старых DCS-ключей** (`etcdctl del`).
+- [TODO] **Удаление старых DCS-ключей**.
 - Реплики `pg-main-1..3` (старый лидер + неперенесённые) — на вывод из эксплуатации.
 
 ---
@@ -442,7 +442,7 @@ PG17-лидера) с disk-guard throttle/abort (чтобы конкурентн
 `UnlockDDL`; drop подписок; `VerifyOldPrimaryStopped`.
 
 **Закладки:**
-- [TODO] **Rename кластера** `pg-main-shadow` → `pg-main` (`etcdctl`) — как и в
+- [TODO] **Rename кластера** `pg-main-shadow` → `pg-main` — как и в
   in-place; ключ-делит лишь сохранил scope на апгрейде (без sysid-mismatch).
 - [TODO] Остановка старого боевого primary + удаление его старых DCS-ключей
   (как и в A).
@@ -457,7 +457,7 @@ PG17-лидера) с disk-guard throttle/abort (чтобы конкурентн
 | **Где рисковый `isolate`/freeze** | ⚠ на боевом кластере | ✅ на параллельном `pg-main-shadow` |
 | **Откат до cutover** | ⚠ реплика уже каннибализирована, восстановление дороже | ✅ тривиально: снести shadow, прод как был |
 | **Формирование HA нового кластера** | TODO: перенос 2 реплик | фаза `rebuild-replicas` (тулза) + TODO: `bin_dir` на репликах |
-| **Patroni cluster rename** | [TODO] `pg-main-17` → `pg-main` (etcdctl) | [TODO] `pg-main-shadow` → `pg-main` (etcdctl) |
+| **Patroni cluster rename** | [TODO] `pg-main-17` → `pg-main` | [TODO] `pg-main-shadow` → `pg-main` |
 | **Стоимость ресурсов** | не нужен параллельный кластер | ⚠ нужен полноразмерный параллельный кластер (2 полные копии БД: provision + reinit) |
 | **Зависимость от ssh/доступов** | локальные операции на ноде N1 | тулза на shadow-лидере + reinit по REST |
 
@@ -468,7 +468,7 @@ PG17-лидера) с disk-guard throttle/abort (чтобы конкурентн
 **in-place (A):**
 - [условие] остановить старый Patroni на N1 перед `pg_upgrade` (или `old_patroni_stop_command`);
 - [TODO] перенос 2 реплик в новый кластер (`bin_dir`→PG17 + reinit);
-- [TODO] rename кластера `pg-main-17` → `pg-main` (etcdctl);
+- [TODO] rename кластера `pg-main-17` → `pg-main`;
 - [TODO] остановка старого primary + удаление старых DCS-ключей;
 - [TODO] DSN-swap через внешний прокси;
 - [TODO] узкое resume-окно `pg_upgrade`.
@@ -479,7 +479,7 @@ PG17-лидера) с disk-guard throttle/abort (чтобы конкурентн
 - [TODO] остановка старого primary + удаление старых DCS-ключей;
 - [TODO] DSN-swap через внешний прокси;
 - [TODO] verify-гейт PG17-готовности реплик; [TODO] rsync-fast-path; [minor] `host:`-парсер;
-- [TODO] rename кластера `pg-main-shadow` → `pg-main` (etcdctl).
+- [TODO] rename кластера `pg-main-shadow` → `pg-main`.
 
 **Чекпойнты между фазами** (`DefaultPrompts`, оба подхода): после
 `provision`, `prepare`, `isolate`, `drain`, `upgrade`, `catchup`,
