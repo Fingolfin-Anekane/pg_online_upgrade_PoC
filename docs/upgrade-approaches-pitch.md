@@ -400,8 +400,42 @@ PG17-лидера) с disk-guard throttle/abort (чтобы конкурентн
 
 ### B.7 · switchover
 
-Как A.6: заморозка боевого `pg-main-1`, синк последовательностей, DSN-swap на
-`pg-main-shadow`, `VerifyTrafficOnNew`, `ALTER SUBSCRIPTION sub_upgrade DISABLE`.
+Критическая секция: замораживаем боевой `pg-main-1`, доигрываем хвост, синкаем
+последовательности и переключаем DSN на shadow (PG17). После этого прод — только на
+чтение и идёт на вывод.
+
+```
++ Cluster: pg-main (PG 13) --- (заморожен на запись, на вывод) ---
++ Cluster: pg-main-shadow (PG 17) — принимает трафик -------------+
+| pg-shadow-1 | z1 | Leader       | running   |  1 |   |   ← сюда переключён DSN
+| pg-shadow-2 | z2 | Sync Standby | streaming |  1 | 0 |
+| pg-shadow-3 | z3 | Replica      | streaming |  1 | 0 |
+```
+
+**Действия:**
+1. **Заморозка прода** (`FreezeOldPrimary`): на `pg-main-1` ставим DML-триггеры
+   `raise_upgrade_readonly` на все таблицы → INSERT/UPDATE/DELETE/TRUNCATE падают с
+   `read_only_sql_transaction`. Запись на проде остановлена.
+2. **Финальный догон** (`WaitFinalLagZero`): ждём `bytes_behind = 0` подписки
+   `sub_upgrade` на издателе (математика — в A.6): весь хвост вплоть до точки
+   заморозки доехал на shadow-лидер.
+3. **Синк последовательностей** (`SyncSequences`): читаем `last_value` всех
+   последовательностей с прода и `SELECT setval(...)` на shadow-лидере со
+   страховочным буфером (`+sequence_buffer`) — чтобы новые id не пересеклись со
+   старыми.
+4. **Сигнал DSN-swap** (`NotifyDSNSwap`): пишем сигнал «новый primary =
+   `pg-main-shadow` лидер»; сам swap выполняет прокси/оператор (тулза DSN не дёргает).
+5. **Проверка трафика** (`VerifyTrafficOnNew`): на shadow-лидере считаем клиентские
+   backend'ы (`pg_stat_activity`) — должны появиться, иначе фейл («сделай DSN-swap,
+   потом re-run»).
+6. **Отключение прямой подписки** (`DisableForwardSubscription`):
+   `ALTER SUBSCRIPTION sub_upgrade DISABLE` на shadow — запись уже идёт сюда, хвост
+   с прода больше не нужен.
+
+**Закладки:**
+- [внешнее] Сам DSN-swap делает прокси/оператор; тулза только пишет сигнал и
+  **верифицирует**, что трафик переехал.
+- Reverse-репликация (PG17→прод) осознанно выключена — откат после cutover недоступен.
 
 ### B.8 · finalize / cleanup
 
