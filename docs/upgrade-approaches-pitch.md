@@ -1,0 +1,443 @@
+# Онлайн-апгрейд PostgreSQL 13 → 17: два подхода
+
+> **TL;DR.** У нас есть два рабочих пайплайна мажорного апгрейда без даунтайма:
+> текущий **in-place** (каннибализируем реплику боевого кластера) и новый
+> **shadow** (поднимаем параллельный кластер, апгрейдим его, переключаем DSN).
+> Рекомендация — **shadow**: боевой кластер **сохраняет полный HA** на всё время
+> работ, рисковые операции (`isolate`/freeze/`pg_upgrade`) уезжают с боевого
+> кластера на параллельный, откат до cutover тривиален, а операторской возни с
+> DCS меньше (не нужен rename scope). Цена — отдельный параллельный кластер и
+> сейчас один ручной шаг на репликах (`bin_dir`→PG17). Ниже — обе схемы по фазам,
+> с реальной топологией Patroni, командами и SQL, и со всеми «закладками» (ручные
+> шаги / TODO / условия), на которые мы заложились.
+
+---
+
+## 1. Задача и инварианты
+
+Апгрейд мажорной версии PostgreSQL (13 → 17) под нагрузкой, без окна простоя.
+Физическая репликация **не работает между мажорами** (PG17-standby не стримит с
+PG13-primary), поэтому мажорный скачок неизбежно идёт через `pg_upgrade` +
+логический «хвост» через слот. Инварианты, которые держим в обоих подходах:
+
+- **Нулевой даунтайм** записи/чтения для приложения (переключение через DSN-swap).
+- **Без потери данных**: логический слот удерживает WAL от точки заморозки до
+  cutover; драйним слот ровно до `target_lsn`.
+- **Откат** возможен до момента cutover.
+- **Анти-split-brain**: старый primary замораживается на запись и не размораживается
+  обратно (трафик уже на новом).
+- **Запрет чужого DDL** на время окна (event-trigger «DDL-замок»), наши собственные
+  DDL проходят через `pg_upgrade.allow_ddl`.
+
+Обозначения в снимках топологии — как в реальном `patronictl list`: роли
+**Leader / Sync Standby / Replica / Standby Leader** (для standby_cluster),
+состояния `running/streaming/stopped`, `TL` — таймлайн, `Lag in MB`. DC-метки
+z1/z2/z3.
+
+---
+
+## 2. Подход A — in-place (текущий baseline, ветка `master`)
+
+**Идея.** Берём боевой кластер `pg-main`, ставим его Patroni на паузу,
+**каннибализируем одну реплику** (`pg-main-7` = N1): отцепляем её от WAL в точке
+`target_lsn`, апгрейдим `pg_upgrade --link` до PG17, поднимаем как новый кластер
+`pg-main-17`, догоняем логическим «хвостом», **переносим в новый кластер 2 реплики**
+из старого, замораживаем старый primary и переключаем DSN.
+
+Стартовая топология (боевой кластер, 1 лидер + 6 реплик):
+
+```
++ Cluster: pg-main (PG 13) -----------------------------------+
+| Member    | Host | Role         | State     | TL | Lag in MB |
++-----------+------+--------------+-----------+----+-----------+
+| pg-main-1 | z1   | Leader       | running   |  5 |           |
+| pg-main-2 | z2   | Sync Standby | streaming |  5 |         0 |
+| pg-main-3 | z3   | Replica      | streaming |  5 |         0 |
+| pg-main-4 | z1   | Replica      | streaming |  5 |         0 |
+| pg-main-5 | z2   | Replica      | streaming |  5 |         0 |
+| pg-main-6 | z3   | Replica      | streaming |  5 |         0 |
+| pg-main-7 | z1   | Replica      | streaming |  5 |         0 |   ← N1 (target_node)
+```
+
+Фазы: `prepare → isolate → drain → upgrade → catchup → switchover → finalize → cleanup`.
+
+### A.1 · prepare
+
+Топология не меняется; на лидере появляются публикация, логический слот и DDL-замок.
+
+**Действия** (на `pg-main-1`):
+```sql
+CREATE PUBLICATION pub_upgrade FOR ALL TABLES;
+SELECT pg_create_logical_replication_slot('slot_upgrade', 'pgoutput');
+-- baseline слота: restart_lsn / confirmed_flush_lsn
+-- DDL-замок (последним шагом):
+CREATE OR REPLACE FUNCTION pg_upgrade_block_ddl() RETURNS event_trigger AS $$
+BEGIN
+  IF current_setting('pg_upgrade.allow_ddl', true) IS DISTINCT FROM 'on' THEN
+    RAISE EXCEPTION 'DDL is locked during the online upgrade (command %)', tg_tag
+      USING HINT = 'pg-upgrade safeguard: an app migration must not run now.';
+  END IF;
+END; $$ LANGUAGE plpgsql;
+CREATE EVENT TRIGGER pg_upgrade_ddl_lock ON ddl_command_start
+  EXECUTE FUNCTION pg_upgrade_block_ddl();
+```
+
+**Закладки:**
+- ⚠ Предусловие `wal_level=logical` на боевом primary.
+- Advisory-предупреждения (не фатальные): `max_slot_wal_keep_size != -1` и долгие
+  транзакции — риск инвалидизации слота во время апгрейда.
+
+### A.2 · isolate
+
+```
++ Cluster: pg-main (PG 13) -----------------------------------+   Maintenance mode: on
+| pg-main-1 | z1   | Leader       | running   |  5 |           |   ← pub + слот + DDL-замок
+| pg-main-2 | z2   | Sync Standby | streaming |  5 |         0 |
+| pg-main-3..6 ...  Replica       | streaming |  5 |         0 |
+| pg-main-7 | z1   | Replica      | stopped   |  5 |           |   ← N1: отцеплена от WAL, заморожена на target_lsn
+```
+
+**Действия:**
+1. `PATCH /config {"pause": true}` — весь кластер в maintenance (Patroni не делает
+   failover **на всё время апгрейда**).
+2. *(опц., `upgrade.old_patroni_stop_command`)* `systemctl stop patroni` на `pg-main-7`.
+3. На `pg-main-7`: `ALTER SYSTEM SET primary_conninfo = ''; SELECT pg_reload_conf();`
+4. Settle replay → `SELECT pg_last_wal_replay_lsn()` → запись `target_lsn`.
+
+**Закладки:**
+- ⚠ **Боевой кластер на ПАУЗЕ всю длину апгрейда** → деградированный HA прода
+  (нет автофейловера, если упадёт `pg-main-1`).
+- ⚠ Рисковая операция (отцепление от WAL, гонка с paused-Patroni, который может
+  вернуть `primary_conninfo`) идёт **на боевом кластере**. Защита — guard
+  `VerifyN1Detached` + повторные проверки walreceiver; если
+  `old_patroni_stop_command` пуст, полагаемся только на guard.
+
+### A.3 · drain
+
+Топология как в isolate (N1 `stopped`). На `pg-main-1` драйним слот `slot_upgrade`
+до `target_lsn` (pgoutput), затем `VerifySlotDrained` (проверка `wal_status != lost`
+и окна `last_commit ≤ confirmed_flush ≤ target`).
+
+**Закладки:** при инвалидизации слота (`max_slot_wal_keep_size`) — жёсткий стоп
+с понятной ошибкой (потенциальная потеря хвоста).
+
+### A.4 · upgrade — точка невозврата
+
+`pg-main-7` уходит из кластера `pg-main` и становится отдельным PG17.
+
+```
++ Cluster: pg-main (PG 13) --- (6 нод, paused) ...               # pg-main-7 больше не член
+( pg-main-7: PG13 → pg_upgrade --link → PG17, ещё не под Patroni )
+```
+
+**Действия** (на `pg-main-7`, тулза локально):
+```
+pg_ctl promote -w -D <datadir13>          # N1 → standalone primary
+CHECKPOINT; CHECKPOINT                     # дважды, перед остановкой
+pg_ctl stop -m fast -D <datadir13>
+# остановить старый Patroni на ноде (иначе воскресит PG13 поверх --link)
+initdb -D <datadir17> <opts из bootstrap.initdb>
+pg_upgrade --old-bindir <bin13> --new-bindir <bin17> \
+           --old-datadir <datadir13> --new-datadir <datadir17> --link --check
+pg_upgrade --old-bindir <bin13> --new-bindir <bin17> \
+           --old-datadir <datadir13> --new-datadir <datadir17> --link      # ← ТОЧКА НЕВОЗВРАТА
+```
+
+**Закладки:**
+- [условие] Старый Patroni на ноде должен быть остановлен (`old_patroni_stop_command`
+  или вручную) — иначе сервис-рестарт воскресит PG13 поверх `--link`-нутых файлов
+  и испортит новый кластер.
+- [ручное] Узкое resume-окно: если процесс упал между успешным `pg_upgrade` и
+  записью `PgUpgradeDone`, восстановление — ручное (подтвердить, что апгрейд прошёл,
+  и пометить состояние). Авто-проба намеренно не делается.
+
+### A.5 · catchup — и перенос реплик в новый кластер
+
+`pg-main-7` поднимается под Patroni как **новый кластер `pg-main-17`** (scope
+переименован), подписывается логически на старый primary и догоняет хвост.
+
+```
++ Cluster: pg-main (PG 13) --- (6 нод, paused, всё ещё боевой)
++ Cluster: pg-main-17 (PG 17) -------------------------------+
+| pg-main-7 | z1 | Leader | running | 1 |   |   ← подписка sub_upgrade на pg-main-1, lag→0
+```
+
+**Действия:**
+1. Патч `patroni.yml`: `scope → pg-main-17`, `data_dir/bin_dir/config_dir → PG17`.
+2. `systemctl start patroni` → Patroni поднимает PG17 и промоутит в primary.
+3. `CREATE SUBSCRIPTION sub_upgrade CONNECTION '<dsn pg-main-1>' PUBLICATION pub_upgrade
+   WITH (copy_data = false, create_slot = false, slot_name = 'slot_upgrade', enabled = true);`
+4. Переустановить DDL-замок на PG17; ждать `bytes_behind = 0`.
+
+Затем — **перенос 2 реплик в новый кластер** (операторский шаг): на `pg-main-5` и
+`pg-main-6` ставим `bin_dir=PG17`, scope `pg-main-17`, и `reinit` (basebackup с
+PG17-лидера):
+
+```
++ Cluster: pg-main-17 (PG 17) -------------------------------+
+| pg-main-7 | z1 | Leader       | running   | 1 |   |
+| pg-main-5 | z2 | Sync Standby | streaming | 1 | 0 |   ← перенесена
+| pg-main-6 | z3 | Replica      | streaming | 1 | 0 |   ← перенесена
+```
+
+**Закладки:**
+- [ручное] **Формирование HA нового кластера — операторское**: тулза поднимает
+  только лидера, перенос/добавление реплик (`pg-main-5`, `pg-main-6`) делает
+  оператор; `VerifyNewClusterHealthy` лишь напоминает («есть лидер, реплик пока
+  нет — добавь реплику перед switchover»).
+
+### A.6 · switchover (критическая секция)
+
+Замораживаем старый primary, синкаем последовательности, переключаем DSN на
+`pg-main-17`.
+
+**Действия:**
+```sql
+-- заморозка старого primary (DML-триггеры на всех таблицах):
+CREATE OR REPLACE FUNCTION raise_upgrade_readonly() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'database is read-only during upgrade window'
+  USING ERRCODE = 'read_only_sql_transaction'; RETURN NULL; END; $$ LANGUAGE plpgsql;
+-- CREATE TRIGGER upgrade_freeze BEFORE INSERT/UPDATE/DELETE/TRUNCATE ... на каждой таблице
+```
+Затем: ждать финальный `bytes_behind = 0` → `SELECT setval(...)` для всех
+последовательностей (со страховочным буфером) → записать сигнал DSN-swap →
+проверить трафик на PG17 (`pg_stat_activity`) → `ALTER SUBSCRIPTION sub_upgrade DISABLE`.
+
+**Закладки:**
+- [внешнее] Сам DSN-swap делает прокси/оператор; тулза только пишет сигнал и
+  **верифицирует**, что трафик переехал (`VerifyTrafficOnNew`).
+- Reverse-репликация (PG17→старый) осознанно выключена (создавала
+  bidirectional-петлю); откат после cutover — недоступен.
+
+### A.7 · finalize
+
+`UnlockDDL` на новом; drop форвард-подписки (снимает слот на старом);
+`VerifyRenamedCluster`.
+
+**Закладки:**
+- [ручное] **Rename кластера — операторский** (`etcdctl`): `pg-main-17` → боевое имя.
+- Старый primary **остаётся замороженным** (анти-split-brain), не размораживается.
+
+### A.8 · cleanup
+
+Архив логов `pg_upgrade_output.d`; `VerifyOldPrimaryStopped`.
+
+**Закладки:**
+- [ручное] **Остановка старого primary — операторская** (тулза на удалённой ноде
+  `pg_ctl` не делает; только проверяет, что он недоступен).
+- [ручное] **Удаление старых DCS-ключей — операторский** follow-up (`etcdctl del`).
+- Реплики `pg-main-1..4` (старый лидер + неперенесённые) — на вывод из эксплуатации.
+
+---
+
+## 3. Подход B — shadow (новый, ветка `feat/shadow-cluster-upgrade`)
+
+**Идея.** Боевой кластер `pg-main` **не трогаем вообще**. Поднимаем параллельный
+кластер `pg-main-shadow`, делаем его Patroni `standby_cluster` боевого (физическая
+репликация), затем промоутим, апгрейдим `pg_upgrade --link` **с удалением DCS-ключа**
+(чтобы новый sysid принялся под тем же scope), догоняем логическим хвостом,
+доводим реплики reinit'ом до HA и переключаем DSN. Боевой кластер показан 3-нодовым
+для краткости — его размер не важен, он не меняется.
+
+Фазы: `provision → prepare → isolate → drain → upgrade → catchup → rebuild-replicas
+→ switchover → finalize → cleanup`.
+
+### B.0 · provision
+
+Боевой нетронут; shadow становится standby_cluster (физически реплицирует прод).
+
+```
++ Cluster: pg-main (PG 13) --- (боевой, полный HA, не трогаем) ---
++ Cluster: pg-main-shadow (PG 13) — standby_cluster --------------+
+| pg-shadow-1 | z1 | Standby Leader | running   |  3 |   |
+| pg-shadow-2 | z2 | Replica        | streaming |  3 | 0 |
+| pg-shadow-3 | z3 | Replica        | streaming |  3 | 0 |
+```
+
+**Действия:**
+```sql
+-- на проде: физический слот под стрим шэдоу
+SELECT pg_create_physical_replication_slot('shadow_phys');
+```
+```
+PATCH /config (Patroni шэдоу):
+{"standby_cluster": {"host": "<pg-main-1>", "port": 5432,
+  "primary_slot_name": "shadow_phys", "create_replica_methods": ["basebackup"]}}
+```
+Ждать lag < 16MB и полный набор нод.
+
+**Закладки:** нет ручных шагов (предполагаем, что сам shadow-кластер уже
+существует как пустой Patroni-кластер).
+
+### B.1 · prepare
+
+То же, что в A.1 (на боевом `pg-main-1`: `pub_upgrade`, `slot_upgrade`, DDL-замок).
+Shadow не меняется.
+
+### B.2 · isolate (на шэдоу — боевой не тронут)
+
+```
++ Cluster: pg-main (PG 13) --- (боевой, полный HA, не тронут) ---
++ Cluster: pg-main-shadow (PG 13) -------------------------------+
+| pg-shadow-1 | z1 | Leader       | running   |  4 |   |   ← promote, заморожен на target_lsn
+| pg-shadow-2 | z2 | Sync Standby | streaming |  4 | 0 |
+| pg-shadow-3 | z3 | Replica      | streaming |  4 | 0 |
+```
+
+**Действия:**
+1. `PATCH /config {"standby_cluster": null}` → Patroni промоутит `pg-shadow-1` в
+   обычный PG13-primary.
+2. Ждать `SELECT pg_is_in_recovery()` = false; settle replay → `target_lsn`.
+3. На проде: `SELECT pg_drop_replication_slot('shadow_phys');`
+
+**Закладки:** ✅ **Прод не тронут — без паузы Patroni, без гонок `primary_conninfo`
+на боевом.** Рисковый промоут/заморозка — на параллельном кластере.
+
+### B.3 · drain
+
+На боевом `pg-main-1` драйним `slot_upgrade` до `target_lsn` (как A.3).
+
+**Закладки:**
+- [ручное] Чекпойнт перед `upgrade` требует **оператору остановить Patroni на всех
+  репликах шэдоу** (`pg-shadow-2`, `pg-shadow-3`) — чтобы реплика не сделала
+  failover при остановке лидера и не помешала удалению DCS-ключа.
+
+### B.4 · upgrade — точка невозврата (на шэдоу)
+
+```
+( pg-main-shadow: Patroni остановлен на всех нодах; /service/pg-main-shadow удалён;
+  pg-shadow-1: PG13 → pg_upgrade --link → PG17 )
++ Cluster: pg-main (PG 13) --- (боевой, полный HA, не тронут) ---
+```
+
+**Действия** (на `pg-shadow-1`, тулза локально):
+```
+systemctl stop patroni                     # StopShadowPatroni (shadow_patroni_stop_command, обязателен)
+CHECKPOINT; CHECKPOINT; pg_ctl stop -m fast -D <datadir13>
+DELETE /v2/keys/service/pg-main-shadow?recursive=true&dir=true   # ← удаление DCS-ключа (etcd v2, mTLS)
+initdb -D <datadir17> <opts>
+pg_upgrade ... --link --check
+pg_upgrade ... --link                        # ← ТОЧКА НЕВОЗВРАТА
+```
+
+**Закладки:**
+- [ручное] Реплики шэдоу остановлены оператором (см. B.3) **до** удаления ключа.
+- Удаление `/service/pg-main-shadow` — это и есть «магия sysid»: после `pg_upgrade`
+  у датадира новый system identifier; стерев ключ, мы позволяем Patroni при старте
+  заново записать `/initialize` с новым sysid **под тем же scope** (без rename).
+
+### B.5 · catchup (на шэдоу, scope сохранён)
+
+`pg-shadow-1` поднимается под Patroni как PG17 **под тем же scope `pg-main-shadow`**,
+подписывается на боевой primary, догоняет хвост.
+
+```
++ Cluster: pg-main-shadow (PG 17) ---------------------------+
+| pg-shadow-1 | z1 | Leader | running | 1 |   |   ← новый /initialize с новым sysid, scope тот же
+```
+
+**Действия:**
+1. Патч `patroni.yml`: `data_dir/bin_dir → PG17` (**scope НЕ меняем**).
+2. `systemctl start patroni` → Patroni адоптит PG17-датадир, пишет свежий
+   `/initialize`, промоутит в primary.
+3. `CREATE SUBSCRIPTION sub_upgrade CONNECTION '<dsn pg-main-1>' PUBLICATION pub_upgrade
+   WITH (copy_data = false, create_slot = false, slot_name = 'slot_upgrade', enabled = true);`
+4. Переустановить DDL-замок; ждать `bytes_behind = 0`.
+
+### B.6 · rebuild-replicas
+
+Реплики шэдоу доводятся до PG17 reinit'ом (basebackup с нового лидера) → полный HA.
+
+```
++ Cluster: pg-main-shadow (PG 17) ---------------------------+
+| pg-shadow-1 | z1 | Leader       | running   | 1 |   |
+| pg-shadow-2 | z2 | Sync Standby | streaming | 1 | 0 |
+| pg-shadow-3 | z3 | Replica      | streaming | 1 | 0 |
+```
+
+**Действия:** для каждой реплики `POST /reinitialize {"force": true}` (basebackup с
+PG17-лидера) с disk-guard throttle/abort (чтобы конкурентные basebackup'ы не
+распухли и не съели слот на проде).
+
+**Закладки:**
+- [ручное] **Оператор руками ставит `bin_dir=PG17` на репликах** (`pg-shadow-2/3`)
+  и поднимает их Patroni перед фазой — scope у них уже верный (ключ-делит сохранил
+  scope), `data_dir` тоже. Это единственный ручной шаг по конфигам реплик.
+- [TODO] verify-гейт PG17-готовности реплики перед reinit (быстрый фейл вместо
+  немого таймаута).
+- [TODO/бэклог] rsync-fast-path вместо basebackup для больших баз.
+- [known minor] etcd-парсер читает `hosts:` (как на платформе), но не одиночный
+  `host:`.
+
+### B.7 · switchover
+
+Как A.6: заморозка боевого `pg-main-1`, синк последовательностей, DSN-swap на
+`pg-main-shadow`, `VerifyTrafficOnNew`, `ALTER SUBSCRIPTION sub_upgrade DISABLE`.
+
+### B.8 · finalize / cleanup
+
+`UnlockDDL`; drop подписок; `VerifyOldPrimaryStopped`.
+
+**Закладки:**
+- ✅ **Rename scope НЕ нужен** (scope сохранён удалением ключа) — на один
+  операторский `etcdctl`-шаг меньше, чем в in-place.
+- [ручное] Остановка старого боевого primary + удаление его старых DCS-ключей —
+  операторские (как и в A).
+
+---
+
+## 4. Сравнение
+
+| Критерий | in-place (A) | shadow (B) |
+|---|---|---|
+| **HA боевого кластера во время апгрейда** | ⚠ Patroni на **паузе**, реплика забрана → деградированный HA | ✅ **Полный HA**, боевой не тронут |
+| **Где рисковый `isolate`/freeze** | ⚠ на боевом кластере | ✅ на параллельном `pg-main-shadow` |
+| **Откат до cutover** | ⚠ реплика уже каннибализирована, восстановление дороже | ✅ тривиально: снести shadow, прод как был |
+| **Формирование HA нового кластера** | ручной перенос 2 реплик (оператор) | фаза `rebuild-replicas` (тулза) + ручной `bin_dir` на репликах |
+| **DCS-операции оператора** | ⚠ `etcdctl` **rename scope** + удаление старых ключей | ✅ rename не нужен (ключ-делит тулзой); только удаление старых ключей |
+| **Точки невозврата** | `pg_upgrade --link`, затем cutover | то же |
+| **Стоимость ресурсов** | не нужен параллельный кластер | ⚠ нужен полноразмерный параллельный кластер (2 полные копии БД: provision + reinit) |
+| **Зависимость от ssh/доступов** | локальные операции на ноде N1 | тулза на shadow-лидере + reinit по REST |
+
+---
+
+## 5. Свод ручных шагов и TODO
+
+**in-place (A):**
+- [условие] остановить старый Patroni на N1 перед `pg_upgrade` (или `old_patroni_stop_command`);
+- [ручное] перенос 2 реплик в новый кластер (`bin_dir`→PG17 + reinit);
+- [ручное] `etcdctl` rename scope (`pg-main-17` → боевое имя);
+- [ручное] остановка старого primary + удаление старых DCS-ключей;
+- [ручное] DSN-swap (прокси/оператор);
+- [ручное] узкое resume-окно `pg_upgrade`.
+
+**shadow (B):**
+- [ручное] остановить Patroni на репликах шэдоу перед `upgrade` (чекпойнт `drain`);
+- [ручное] `bin_dir=PG17` на репликах + поднять их Patroni перед `rebuild-replicas`;
+- [ручное] остановка старого primary + удаление старых DCS-ключей;
+- [ручное] DSN-swap (прокси/оператор);
+- [TODO] verify-гейт PG17-готовности реплик; [TODO] rsync-fast-path; [minor] `host:`-парсер;
+- ✅ rename scope НЕ нужен.
+
+**Операторские чекпойнты между фазами** (`DefaultPrompts`, оба подхода): после
+`provision`, `prepare`, `isolate`, `drain`, `upgrade`, `catchup`,
+`rebuild-replicas`, `switchover`, `finalize` — каждый требует явного «y» оператора.
+
+---
+
+## 6. Рекомендация
+
+**Берём shadow (B).** Главное — боевой кластер **сохраняет полный HA** на всё время
+работ, а все рисковые операции (отцепление от WAL, заморозка, `pg_upgrade`) уезжают
+с боевого кластера на параллельный. Откат до cutover тривиален, операторской возни с
+DCS меньше (не нужен rename scope). In-place же держит боевой кластер на паузе с
+забранной репликой и требует ручного переноса реплик + rename — больше риска именно
+на проде.
+
+**Когда оставить in-place:** если нет ресурсов на полноразмерный параллельный
+кластер (две полные копии БД во время работ) или среда не позволяет поднять
+параллельный Patroni-кластер нужного размера.
+
+**Следующие шаги для shadow:** валидация связки на тест-стенде (etcd v2 mTLS +
+delete-ключа → переинициализация Patroni с новым sysid под тем же scope), образец
+конфига с shadow-полями, затем закрытие TODO (verify-гейт реплик, rsync-fast-path).
